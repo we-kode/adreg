@@ -1,6 +1,6 @@
 ![GitHub License](https://img.shields.io/github/license/we-kode/adreg?style=for-the-badge&link=https%3A%2F%2Fgithub.com%2Fwe-kode%2Fadreg%3Ftab%3DGPL-3.0-1-ov-file%23readme)
 ![GitHub Release](https://img.shields.io/github/v/release/we-kode/adreg?style=for-the-badge&include_prereleases&display_name=tag&link=https%3A%2F%2Fgithub.com%2Fwe-kode%2Fadreg%2Freleases)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/we-kode/adreg/docker-compose?branch=master&style=for-the-badge)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/we-kode/adreg/docker-compose.yml?branch=master&style=for-the-badge)
 
 # adreg
 A project to register user via registration link to midpoint. Allows to invite and add AD user via registration link from web app.
