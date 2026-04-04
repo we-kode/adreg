@@ -2,9 +2,9 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
 ARG USERNAME=wekode
 ARG UID
 ARG GID
-run groupadd --gid $gid $username \
-    && useradd --uid $uid --gid $gid -m $username
-user $username
+run groupadd --gid $GID $USERNAME \
+    && useradd --uid $UID --gid $GID -m $USERNAME
+user $USERNAME
 WORKDIR /app
 EXPOSE 8080
 
