@@ -1,0 +1,141 @@
+version: '3.9'
+
+services:
+
+  # =========================
+  # Admin App
+  # =========================
+  wekode.adreag.admin:
+    image: ${IMAGE_ADMIN}
+    build:
+      context: ./AdminApp
+      dockerfile: AdminApp/Dockerfile
+      args:
+       - UID=${UID}
+       - GID=${GID}
+       - DOT_NET_BUILD_CONFIG=Release
+    container_name: wekode.adreag.admin
+    restart: unless-stopped
+    user: ${UID}:${GID}
+    ports:
+      - "${PORT_ADMIN}:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - midpoint
+    networks:
+      - internal
+    logging:
+      driver: "json-file"
+      options:
+        mode: "non-blocking"
+        max-size: "20m"
+        max-file: "3"
+
+  # =========================
+  # Registration App
+  # =========================
+  wekode.adreag:
+    build:
+      context: ./RegistrationApp
+    container_name: wekode.adreag
+    restart: unless-stopped
+    ports:
+      - "${PORT_REGISTER}:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - midpoint
+    networks:
+      - internal
+    logging:
+      driver: "json-file"
+      options:
+        mode: "non-blocking"
+        max-size: "20m"
+        max-file: "3"
+
+  # =========================
+  # midPoint IAM
+  # =========================
+  midpoint_server:
+    image: evolveum/midpoint:${MP_VER:-latest}-alpine
+    depends_on:
+      data_init:
+        condition: service_completed_successfully
+      midpoint_data:
+        condition: service_started
+    command: [ "/opt/midpoint/bin/midpoint.sh", "container" ]
+    ports:
+      - "${MP_PORT:-8085}:8080"
+    environment:
+     - MP_SET_midpoint_repository_jdbcUsername=/secrets/db_user
+     - MP_SET_midpoint_repository_jdbcPassword_FILE=/secrets/db_password
+     - MP_SET_midpoint_repository_jdbcUrl=jdbc:postgresql://midpoint_data:5432/midpoint
+     - MP_SET_midpoint_repository_database=${MP_DB:-midpoint}
+     - MP_UNSET_midpoint_repository_hibernateHbm2ddl=1
+     - MP_NO_ENV_COMPAT=1
+    networks:
+     - internal
+    volumes:
+     - ./midpoint/home:/opt/midpoint/var
+     - ./midpoint/secrets:/secrets:ro
+     - /etc/localtime:/etc/localtime:ro
+
+  # =========================
+  # midPoint DB
+  # =========================
+  midpoint_data:
+    image: postgres:${POSTRES_VERSION:-16-alpine}
+    environment:
+     - POSTGRES_PASSWORD_FILE=/secrets/db_password
+     - POSTGRES_USER_FILE=/secrets/db_user
+     - POSTGRES_INITDB_ARGS=--lc-collate=en_US.utf8 --lc-ctype=en_US.utf8
+    networks:
+     - internal
+     volumes:
+     - ./midpoint/data:/var/lib/postgresql/data
+     - ./midpoint/secrets:/secrets:ro
+     - /etc/localtime:/etc/localtime:ro
+
+  data_init:
+    image: evolveum/midpoint:${MP_VER:-latest}-alpine
+    command: >
+      bash -c "
+      cd /opt/midpoint ;
+      bin/midpoint.sh init-native ;
+      echo ' - - - - - - ' ;
+      bin/ninja.sh -B info >/dev/null 2>/tmp/ninja.log ;
+      grep -q \"ERROR\" /tmp/ninja.log && (
+      bin/ninja.sh run-sql --create --mode REPOSITORY  ;
+      bin/ninja.sh run-sql --create --mode AUDIT
+      ) ||
+      echo -e '\\n Repository init is not needed...' ;
+      "
+    depends_on:
+     - midpoint_data
+    environment:
+     - MP_SET_midpoint_repository_jdbcUsername=/secrets/db_user
+     - MP_SET_midpoint_repository_jdbcPassword_FILE=/secrets/db_password
+     - MP_SET_midpoint_repository_jdbcUrl=jdbc:postgresql://midpoint_data:5432/midpoint
+     - MP_SET_midpoint_repository_database=${MP_DB:-midpoint}
+     - MP_INIT_CFG=/opt/midpoint/var
+    networks:
+     - internal
+    volumes:
+     - ./midpoint/home:/opt/midpoint/var
+     - ./midpoint/secrets:/secrets:ro
+     - /etc/localtime:/etc/localtime:ro
+
+# =========================
+# Networks
+# =========================
+networks:
+  internal:
+    driver: bridge

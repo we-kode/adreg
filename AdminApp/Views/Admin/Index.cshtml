@@ -1,0 +1,49 @@
+﻿@using Shared.Models
+@model List<PendingRegistration>
+
+<h2 class="mb-4">Pending Registrations</h2>
+
+@if (!Model.Any())
+{
+    <div class="alert alert-info">
+        No pending requests
+    </div>
+}
+else
+{
+    <table class="table table-hover table-striped shadow-sm">
+
+        <thead class="table-dark">
+            <tr>
+                <th>First Name</th>
+                <th>Last Name</th>
+                <th>Email</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            @foreach (var r in Model)
+            {
+                <tr>
+                    <td>@r.FirstName</td>
+                    <td>@r.LastName</td>
+                    <td>@r.Email</td>
+
+                    <td>
+                        <form method="post" asp-action="Approve" class="d-inline">
+                            <input type="hidden" name="id" value="@r.Id" />
+                            <button class="btn btn-success btn-sm">Approve</button>
+                        </form>
+
+                        <form method="post" asp-action="Reject" class="d-inline">
+                            <input type="hidden" name="id" value="@r.Id" />
+                            <button class="btn btn-danger btn-sm">Reject</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+
+    </table>
+}

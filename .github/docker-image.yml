@@ -1,0 +1,44 @@
+name: Docker Image CI
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+
+  build_admin:
+    name: "Admin App Release"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Get tag
+      run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+    - name: Docker login
+      env: 
+        DOCKER_USER: ${{ secrets.DOCKER_HUB_USER }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_HUB_API_KEY }}
+      run: |
+        docker login -u $DOCKER_USER -p $DOCKER_PASSWORD
+    - name: Build the Docker image
+      run: docker build . --file AdminApp/Dockerfile --build-arg UID=1001 --build-arg GID=1001 --tag ${{ secrets.DOCKER_HUB_USER }}/wekode.adreg.admin:${{ env.RELEASE_VERSION }}
+    - name: Docker push
+      run: docker push ${{ secrets.DOCKER_HUB_USER }}/wekode.adreg.admin:${{ env.RELEASE_VERSION }}
+      
+  build_register:
+    name: "Register App Release"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Get tag
+      run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+    - name: Docker login
+      env: 
+        DOCKER_USER: ${{ secrets.DOCKER_HUB_USER }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_HUB_API_KEY }}
+      run: |
+        docker login -u $DOCKER_USER -p $DOCKER_PASSWORD
+    - name: Build the Docker image
+      run: docker build . --file RegistrationApp/Dockerfile --build-arg UID=1001 --build-arg GID=1001 --tag ${{ secrets.DOCKER_HUB_USER }}/wekode.adreg:${{ env.RELEASE_VERSION }}
+    - name: Docker push
+      run: docker push ${{ secrets.DOCKER_HUB_USER }}/wekode.adreg:${{ env.RELEASE_VERSION }}
