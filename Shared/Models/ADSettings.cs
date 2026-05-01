@@ -11,4 +11,6 @@ public class ADSettings
     public string SearchBase { get; set; } = string.Empty;
     // Optional container/OU where new users should be created (relative to SearchBase or full DN)
     public string UsersContainer { get; set; } = string.Empty;
+    // If true the LDAP server certificate will not be validated. Use only for testing.
+    public bool AllowInvalidCertificate { get; set; } = false;
 }

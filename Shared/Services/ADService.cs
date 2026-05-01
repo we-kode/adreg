@@ -19,12 +19,54 @@ public class ADService
 
     private LdapConnection CreateConnection()
     {
-        var identifier = new LdapDirectoryIdentifier(_settings.LdapUrl, 389, false, false);
+        if (string.IsNullOrWhiteSpace(_settings.LdapUrl))
+            throw new InvalidOperationException("LDAP URL is not configured in ADSettings.LdapUrl");
+
+        // parse possible formats: ldap://host:port, ldaps://host:port, host:port or just host
+        string host = _settings.LdapUrl;
+        int port = -1;
+        bool useSsl = false;
+
+        if (Uri.TryCreate(_settings.LdapUrl, UriKind.Absolute, out var uri))
+        {
+            host = uri.Host;
+            port = uri.Port;
+            useSsl = uri.Scheme.Equals("ldaps", StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            // try host:port
+            var idx = _settings.LdapUrl.IndexOf(':');
+            if (idx > 0)
+            {
+                host = _settings.LdapUrl.Substring(0, idx);
+                if (int.TryParse(_settings.LdapUrl.Substring(idx + 1), out var p))
+                    port = p;
+            }
+        }
+
+        if (port == -1)
+            port = useSsl ? 636 : 389;
+
+        var identifier = new LdapDirectoryIdentifier(host, port, false, false);
         var conn = new LdapConnection(identifier)
         {
-            AuthType = AuthType.Basic,
-            SessionOptions = { ProtocolVersion = 3 }
+            AuthType = AuthType.Basic
         };
+
+        // ProtocolVersion must be set for many servers
+        conn.SessionOptions.ProtocolVersion = 3;
+
+        if (useSsl)
+        {
+            conn.SessionOptions.SecureSocketLayer = true;
+
+            if (_settings.AllowInvalidCertificate)
+            {
+                // Accept any server certificate (only for testing)
+                conn.SessionOptions.VerifyServerCertificate += (c, cert) => true;
+            }
+        }
 
         conn.Credential = new NetworkCredential(_settings.BindDn, _settings.BindPassword);
         conn.Bind();
