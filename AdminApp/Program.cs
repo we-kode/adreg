@@ -1,10 +1,7 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 using Shared.Data;
 using Shared.Models;
 using Shared.Services;
-using System.Net.Http.Headers;
-using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddLogging();
@@ -14,23 +11,9 @@ builder.Services.AddControllersWithViews();
 
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite("Data Source=/data/adreg.db"));
 
-// Add Midpoint client
-builder.Services.Configure<MidpointSettings>(builder.Configuration.GetSection("MIDPOINT"));
-builder.Services.AddHttpClient<MidpointService>((sp, client) =>
-{
-    var settings = sp.GetRequiredService<IOptions<MidpointSettings>>().Value;
-
-    client.BaseAddress = new Uri(settings.BaseUrl);
-
-    var auth = Convert.ToBase64String(
-        Encoding.ASCII.GetBytes($"{settings.Username}:{settings.Password}"));
-
-    client.DefaultRequestHeaders.Authorization =
-        new AuthenticationHeaderValue("Basic", auth);
-
-    client.DefaultRequestHeaders.Accept.Add(
-        new MediaTypeWithQualityHeaderValue("application/json"));
-});
+// Add Active Directory client
+builder.Services.Configure<ADSettings>(builder.Configuration.GetSection("AD"));
+builder.Services.AddSingleton<ADService>();
 
 // MailKit
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("SMTP"));

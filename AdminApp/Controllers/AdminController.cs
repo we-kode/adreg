@@ -8,7 +8,7 @@ using System.Text.Json;
 namespace AdminApp.Controllers
 {
     [Authorize]
-    public class AdminController(AppDbContext db, MailService mail, MidpointService midpoint) : Controller
+    public class AdminController(AppDbContext db, MailService mail, ADService adService) : Controller
     {
         public IActionResult Index()
         {
@@ -26,7 +26,7 @@ namespace AdminApp.Controllers
 
             if (req == null) return RedirectToAction("Index", "Admin");
 
-            await midpoint.CreateUser(req.FirstName, req.LastName, req.Email, JsonSerializer.Deserialize<List<string>>(req.GroupsJson) ?? []);
+            await adService.CreateUser(req.FirstName, req.LastName, req.Email, JsonSerializer.Deserialize<List<string>>(req.GroupsJson) ?? []);
 
             db.PendingRegistrations.Remove(req);
             await db.SaveChangesAsync();
@@ -54,7 +54,7 @@ namespace AdminApp.Controllers
         [HttpGet]
         public async Task<IActionResult> CreateLink()
         {
-            var groups = await midpoint.GetRoles();
+            var groups = await adService.GetRoles();
             ViewBag.Groups = groups;
             return View();
         }
