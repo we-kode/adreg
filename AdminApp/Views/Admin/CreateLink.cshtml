@@ -1,6 +1,7 @@
-﻿@{
+@using Shared.Models
+@{
     Layout = "_Layout";
-    var groups = ViewBag.Groups as List<(string Oid, string Name)>;
+    var groups = ViewBag.Groups as List<DirectoryItem> ?? new List<DirectoryItem>();
 }
 
 <h2>Create Registration Link</h2>
@@ -27,18 +28,18 @@
             </div>
 
             <div class="mb-3">
-                <label>AD Groups</label>
-                <select name="selectedGroups" class="form-select" multiple size="5">
-                    @foreach (var g in (groups ?? []))
+                <label>Directory Groups</label>
+                <select name="selectedGroups" class="form-select" multiple size="8">
+                    @foreach (var g in groups)
                     {
-                        <option value="@g.Oid">@g.Name</option>
+                        <option value="@g.Dn">@g.Name</option>
                     }
                 </select>
                 <small class="form-text text-muted">Ctrl+Click to select multiple</small>
             </div>
 
             <button class="btn btn-primary">
-                Create & Send Link
+                Create &amp; Send Link
             </button>
 
             <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary ms-2">Cancel</a>

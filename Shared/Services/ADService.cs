@@ -3,514 +3,557 @@ using Microsoft.Extensions.Options;
 using Shared.Models;
 using System.DirectoryServices.Protocols;
 using System.Net;
+using System.Text;
 
 namespace Shared.Services;
 
+// Thrown for any directory operation failure. Wraps the underlying LDAP exception so callers
+// can show a friendly message without crashing the app.
+public sealed class DirectoryServiceException : Exception
+{
+    public DirectoryServiceException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
+// Single entry point for directory operations. Supports Microsoft Active Directory and generic
+// LDAP servers (e.g. OpenLDAP). AD takes priority and is the default; the LDAP profile only kicks
+// in when AD__ServerType is explicitly set to "Ldap".
 public class ADService
 {
     private readonly ADSettings _settings;
     private readonly ILogger<ADService> _logger;
+    private readonly DirectoryProfile _profile;
 
     public ADService(IOptions<ADSettings> options, ILogger<ADService> logger)
     {
         _settings = options.Value;
         _logger = logger;
+        _profile = DirectoryProfile.From(_settings);
     }
 
-    private string ResolveContainerDn(string containerSetting)
-    {
-        var baseDn = _settings.SearchBase ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(containerSetting))
-            return baseDn;
+    // ---------- Public surface ----------
 
-        // If the container setting already looks like a full DN (contains =), return as-is
-        if (containerSetting.Contains('=') && containerSetting.Contains(','))
-            return containerSetting;
-
-        // If it already ends with the base dn, return as-is
-        if (!string.IsNullOrWhiteSpace(baseDn) && (containerSetting.Equals(baseDn, StringComparison.OrdinalIgnoreCase)
-                                                    || containerSetting.EndsWith($"," + baseDn, StringComparison.OrdinalIgnoreCase)))
-            return containerSetting;
-
-        // Otherwise treat it as relative and append the configured SearchBase
-        if (string.IsNullOrWhiteSpace(baseDn))
-            return containerSetting;
-
-        return containerSetting + "," + baseDn;
-    }
-
-    private string BuildObjectClassFilter(string csv)
-    {
-        if (string.IsNullOrWhiteSpace(csv)) return "";
-        var parts = csv.Split(',').Select(p => p.Trim()).Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
-        if (parts.Length == 0) return "";
-        if (parts.Length == 1) return $"(objectClass={EscapeFilter(parts[0])})";
-        return "(|" + string.Join(string.Empty, parts.Select(p => $"(objectClass={EscapeFilter(p)})")) + ")";
-    }
-
-    public async Task<bool> CreateGroup(string groupName)
+    // Returns true if the group was created, false if it already existed.
+    public Task<bool> CreateGroup(string groupName)
     {
         if (string.IsNullOrWhiteSpace(groupName))
             throw new ArgumentException("Group name must be provided", nameof(groupName));
 
-        return await Task.Run(() =>
+        return Execute(conn => CreateGroupCore(conn, groupName), $"CreateGroup({groupName})");
+    }
+
+    public Task CreateUser(string firstName, string lastName, string username, string password, IEnumerable<string>? groups)
+    {
+        if (string.IsNullOrWhiteSpace(firstName)) throw new ArgumentException("First name required", nameof(firstName));
+        if (string.IsNullOrWhiteSpace(lastName)) throw new ArgumentException("Last name required", nameof(lastName));
+        if (string.IsNullOrWhiteSpace(username)) throw new ArgumentException("Username required", nameof(username));
+
+        return Execute<int>(conn =>
         {
-            using var conn = CreateConnection();
+            CreateUserCore(conn, firstName, lastName, username, password, groups);
+            return 0;
+        }, $"CreateUser({username})");
+    }
 
-            var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
-            var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
+    public Task<List<DirectoryItem>> GetGroups(string? search = null) =>
+        Execute(conn => SearchGroups(conn, search), $"GetGroups(search={search})");
 
-            // Check if a group with that CN already exists
-            var searchFilter = string.IsNullOrWhiteSpace(groupClassFilter)
-                ? $"(cn={EscapeFilter(groupName)})"
-                : $"(&{groupClassFilter}(cn={EscapeFilter(groupName)}))";
+    public Task<List<DirectoryItem>> GetUsers(string? search = null) =>
+        Execute(conn => SearchUsers(conn, search), $"GetUsers(search={search})");
 
-            var search = new SearchRequest(groupsBase, searchFilter, SearchScope.Subtree, null);
-            var resp = (SearchResponse)conn.SendRequest(search);
-            if (resp.Entries.Count > 0)
-            {
-                return false; // already exists
-            }
+    public Task<List<DirectoryItem>> GetUsersInGroup(string groupDn)
+    {
+        if (string.IsNullOrWhiteSpace(groupDn)) return Task.FromResult(new List<DirectoryItem>());
+        return Execute(conn => UsersInGroup(conn, groupDn), $"GetUsersInGroup({groupDn})");
+    }
 
-            // Create the group under the resolved groups container
-            var dn = $"CN={EscapeRdn(groupName)},{groupsBase}";
+    public Task<List<DirectoryItem>> GetGroupsForUser(string userDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn)) return Task.FromResult(new List<DirectoryItem>());
+        return Execute(conn => GroupsForUser(conn, userDn), $"GetGroupsForUser({userDn})");
+    }
 
-            var add = new AddRequest(dn,
-                 new DirectoryAttribute("objectClass", "group"),
-                 new DirectoryAttribute("cn", groupName),
-                 new DirectoryAttribute("sAMAccountName", groupName)
-             );
+    // ---------- Search ----------
 
+    private List<DirectoryItem> SearchGroups(LdapConnection conn, string? search)
+    {
+        var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+        var nameFilter = string.IsNullOrWhiteSpace(search)
+            ? string.Empty
+            : $"(cn=*{EscapeFilter(search)}*)";
+        var filter = WrapClassFilter(nameFilter, _profile.GroupObjectClasses);
+        return SearchSorted(conn, groupsBase, filter, _profile.GroupSearchAttributes, MapGroup);
+    }
+
+    private List<DirectoryItem> SearchUsers(LdapConnection conn, string? search)
+    {
+        var usersBase = ResolveContainerDn(_settings.UsersContainer);
+        var filter = BuildUserSearchFilter(search);
+        return SearchSorted(conn, usersBase, filter, _profile.UserSearchAttributes, MapUser);
+    }
+
+    private List<DirectoryItem> UsersInGroup(LdapConnection conn, string groupDn)
+    {
+        // AD: query users by `memberOf` (back-link is reliable). Plain LDAP: read the group's `member` list.
+        if (_profile.SupportsMemberOf)
+        {
+            var usersBase = ResolveContainerDn(_settings.UsersContainer);
+            var filter = WrapClassFilter($"(memberOf={EscapeFilter(groupDn)})", _profile.UserObjectClasses);
+            return SearchSorted(conn, usersBase, filter, _profile.UserSearchAttributes, MapUser);
+        }
+        return Sort(ReadGroupMembers(conn, groupDn));
+    }
+
+    private List<DirectoryItem> GroupsForUser(LdapConnection conn, string userDn)
+    {
+        // Searching groups by `member` works on both AD and standard LDAP without the memberof overlay.
+        var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+        var filter = WrapClassFilter($"(member={EscapeFilter(userDn)})", _profile.GroupObjectClasses);
+        return SearchSorted(conn, groupsBase, filter, _profile.GroupSearchAttributes, MapGroup);
+    }
+
+    private static List<DirectoryItem> SearchSorted(
+        LdapConnection conn, string baseDn, string filter, string[] attrs,
+        Func<SearchResultEntry, DirectoryItem> map)
+    {
+        var resp = (SearchResponse)conn.SendRequest(new SearchRequest(baseDn, filter, SearchScope.Subtree, attrs));
+        return Sort(resp.Entries.Cast<SearchResultEntry>().Select(map));
+    }
+
+    private static List<DirectoryItem> Sort(IEnumerable<DirectoryItem> items) =>
+        items.OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+    private static DirectoryItem MapGroup(SearchResultEntry e) =>
+        new(e.DistinguishedName, GetAttribute(e, "cn") ?? e.DistinguishedName);
+
+    private DirectoryItem MapUser(SearchResultEntry e) =>
+        new(e.DistinguishedName, FormatUserName(e));
+
+    // UI format: "LastName, FirstName (Username)". Falls back gracefully if attributes are missing.
+    private string FormatUserName(SearchResultEntry e)
+    {
+        var firstName = GetAttribute(e, _profile.FirstNameAttribute);
+        var lastName = GetAttribute(e, _profile.LastNameAttribute);
+        var username = GetAttribute(e, _profile.UsernameAttribute);
+        var displayName = GetAttribute(e, _profile.DisplayNameAttribute);
+        var mail = GetAttribute(e, _profile.MailAttribute);
+
+        var hasNames = !string.IsNullOrWhiteSpace(firstName) && !string.IsNullOrWhiteSpace(lastName);
+        var primary = hasNames
+            ? $"{lastName}, {firstName}"
+            : displayName ?? username ?? mail ?? e.DistinguishedName;
+
+        return string.IsNullOrWhiteSpace(username) ? primary : $"{primary} ({username})";
+    }
+
+    private List<DirectoryItem> ReadGroupMembers(LdapConnection conn, string groupDn)
+    {
+        var groupResp = (SearchResponse)conn.SendRequest(
+            new SearchRequest(groupDn, "(objectClass=*)", SearchScope.Base, new[] { _profile.MemberAttribute }));
+
+        var groupEntry = groupResp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
+        var memberDns = groupEntry?.Attributes[_profile.MemberAttribute]?
+            .GetValues(typeof(string)).Cast<string>().ToList();
+        if (memberDns == null || memberDns.Count == 0) return new List<DirectoryItem>();
+
+        var result = new List<DirectoryItem>(memberDns.Count);
+        foreach (var memberDn in memberDns)
+        {
             try
             {
-                conn.SendRequest(add);
-                return true;
+                var resp = (SearchResponse)conn.SendRequest(
+                    new SearchRequest(memberDn, "(objectClass=*)", SearchScope.Base, _profile.UserSearchAttributes));
+                var entry = resp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
+                if (entry != null) result.Add(MapUser(entry));
             }
             catch (DirectoryOperationException ex)
             {
-                _logger.LogError(ex, "Failed to create AD group {GroupDn}", dn);
-                throw;
+                _logger.LogDebug(ex, "Could not read member {Member} of group {Group}", memberDn, groupDn);
+            }
+        }
+        return result;
+    }
+
+    private string BuildUserSearchFilter(string? search)
+    {
+        if (string.IsNullOrWhiteSpace(search))
+            return WrapClassFilter(string.Empty, _profile.UserObjectClasses);
+
+        var s = EscapeFilter(search);
+        var nameFilter =
+            $"(|({_profile.DisplayNameAttribute}=*{s}*)({_profile.FirstNameAttribute}=*{s}*)" +
+            $"({_profile.LastNameAttribute}=*{s}*)({_profile.UsernameAttribute}=*{s}*)({_profile.MailAttribute}=*{s}*))";
+        return WrapClassFilter(nameFilter, _profile.UserObjectClasses);
+    }
+
+    // ---------- Mutation ----------
+
+    private bool CreateGroupCore(LdapConnection conn, string groupName)
+    {
+        var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+        var existsFilter = WrapClassFilter($"(cn={EscapeFilter(groupName)})", _profile.GroupObjectClasses);
+        var existing = (SearchResponse)conn.SendRequest(
+            new SearchRequest(groupsBase, existsFilter, SearchScope.Subtree, null));
+        if (existing.Entries.Count > 0) return false;
+
+        var dn = $"CN={EscapeRdn(groupName)},{groupsBase}";
+        var add = new AddRequest(dn);
+        add.Attributes.Add(new DirectoryAttribute("objectClass", _profile.GroupObjectClasses));
+        add.Attributes.Add(new DirectoryAttribute("cn", groupName));
+
+        if (_profile.Type == DirectoryServerType.ActiveDirectory)
+        {
+            add.Attributes.Add(new DirectoryAttribute("sAMAccountName", groupName));
+        }
+        else if (_profile.GroupRequiresInitialMember && !string.IsNullOrWhiteSpace(_settings.BindDn))
+        {
+            // groupOfNames requires at least one member; seed with the bind DN to satisfy the schema.
+            add.Attributes.Add(new DirectoryAttribute("member", _settings.BindDn));
+        }
+
+        conn.SendRequest(add);
+        return true;
+    }
+
+    private void CreateUserCore(LdapConnection conn, string firstName, string lastName, string username, string password, IEnumerable<string>? groups)
+    {
+        var usersContainerDn = ResolveContainerDn(_settings.UsersContainer);
+        var groupsContainerDn = ResolveContainerDn(_settings.GroupsContainer);
+
+        var displayName = $"{firstName} {lastName}";
+        var userDn = $"CN={EscapeRdn(displayName)},{usersContainerDn}";
+        var mail = ResolveMailAttribute(username);
+
+        conn.SendRequest(BuildAddUserRequest(userDn, displayName, firstName, lastName, username, mail));
+        TrySetPasswordAndEnable(conn, userDn, password);
+        AddUserToGroups(conn, userDn, groupsContainerDn, groups);
+    }
+
+    private string ResolveMailAttribute(string username)
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.InvitationSenderEmail))
+            return _settings.InvitationSenderEmail;
+        if (username.Contains('@')) return username;
+        var domain = DomainFromSearchBase(_settings.SearchBase) ?? "local";
+        return $"{username}@{domain}";
+    }
+
+    private AddRequest BuildAddUserRequest(string userDn, string displayName, string firstName, string lastName, string username, string mail)
+    {
+        var add = new AddRequest(userDn);
+        add.Attributes.Add(new DirectoryAttribute("objectClass", _profile.UserCreationObjectClasses));
+        add.Attributes.Add(new DirectoryAttribute("cn", displayName));
+        add.Attributes.Add(new DirectoryAttribute("sn", lastName));
+        add.Attributes.Add(new DirectoryAttribute("givenName", firstName));
+        add.Attributes.Add(new DirectoryAttribute("displayName", displayName));
+        add.Attributes.Add(new DirectoryAttribute("mail", mail));
+
+        if (_profile.Type == DirectoryServerType.ActiveDirectory)
+        {
+            var sam = username.Contains('@') ? username.Split('@')[0] : username;
+            var upn = username.Contains('@')
+                ? username
+                : $"{sam}@{DomainFromSearchBase(_settings.SearchBase) ?? "local"}";
+            add.Attributes.Add(new DirectoryAttribute("sAMAccountName", sam));
+            add.Attributes.Add(new DirectoryAttribute("userPrincipalName", upn));
+        }
+        else
+        {
+            add.Attributes.Add(new DirectoryAttribute(_profile.UsernameAttribute, username));
+        }
+
+        return add;
+    }
+
+    private void TrySetPasswordAndEnable(LdapConnection conn, string userDn, string password)
+    {
+        if (string.IsNullOrEmpty(password))
+        {
+            _logger.LogWarning("No password supplied for {UserDn}; account left without password.", userDn);
+            return;
+        }
+
+        try
+        {
+            if (_profile.RequiresQuotedUtf16Password)
+                ReplaceAttribute(conn, userDn, _profile.PasswordAttribute, EncodeAdPassword(password));
+            else
+                ReplaceAttribute(conn, userDn, _profile.PasswordAttribute, password);
+
+            if (_profile.RequiresAccountEnable)
+                ReplaceAttribute(conn, userDn, "userAccountControl", "512");
+        }
+        catch (DirectoryOperationException ex)
+        {
+            // AD typically requires LDAPS for `unicodePwd`. Log and continue so the account still exists.
+            _logger.LogWarning(ex, "Could not set password or enable account for {UserDn}.", userDn);
+        }
+    }
+
+    private void AddUserToGroups(LdapConnection conn, string userDn, string groupsContainerDn, IEnumerable<string>? groups)
+    {
+        foreach (var groupRef in groups ?? Enumerable.Empty<string>())
+        {
+            if (string.IsNullOrWhiteSpace(groupRef)) continue;
+
+            try
+            {
+                var groupDn = LooksLikeDn(groupRef) ? groupRef : ResolveGroupDn(conn, groupsContainerDn, groupRef);
+                if (groupDn == null)
+                {
+                    _logger.LogWarning("Group {Group} not found in directory", groupRef);
+                    continue;
+                }
+                AddAttribute(conn, groupDn, _profile.MemberAttribute, userDn);
+            }
+            catch (DirectoryOperationException ex)
+            {
+                _logger.LogError(ex, "Failed to add user {User} to group {Group}", userDn, groupRef);
+            }
+        }
+    }
+
+    private string? ResolveGroupDn(LdapConnection conn, string groupsContainerDn, string cn)
+    {
+        var filter = WrapClassFilter($"(cn={EscapeFilter(cn)})", _profile.GroupObjectClasses);
+        var resp = (SearchResponse)conn.SendRequest(
+            new SearchRequest(groupsContainerDn, filter, SearchScope.Subtree, new[] { "distinguishedName" }));
+        return resp.Entries.Cast<SearchResultEntry>().FirstOrDefault()?.DistinguishedName;
+    }
+
+    private static void ReplaceAttribute(LdapConnection conn, string dn, string name, string value) =>
+        SendModify(conn, dn, BuildModification(name, value, DirectoryAttributeOperation.Replace));
+
+    private static void ReplaceAttribute(LdapConnection conn, string dn, string name, byte[] value) =>
+        SendModify(conn, dn, BuildModification(name, value, DirectoryAttributeOperation.Replace));
+
+    private static void AddAttribute(LdapConnection conn, string dn, string name, string value) =>
+        SendModify(conn, dn, BuildModification(name, value, DirectoryAttributeOperation.Add));
+
+    private static DirectoryAttributeModification BuildModification(string name, string value, DirectoryAttributeOperation op)
+    {
+        var mod = new DirectoryAttributeModification { Name = name, Operation = op };
+        mod.Add(value);
+        return mod;
+    }
+
+    private static DirectoryAttributeModification BuildModification(string name, byte[] value, DirectoryAttributeOperation op)
+    {
+        var mod = new DirectoryAttributeModification { Name = name, Operation = op };
+        mod.Add(value);
+        return mod;
+    }
+
+    private static void SendModify(LdapConnection conn, string dn, DirectoryAttributeModification mod) =>
+        conn.SendRequest(new ModifyRequest(dn, mod));
+
+    // ---------- Connection / execution ----------
+
+    private async Task<T> Execute<T>(Func<LdapConnection, T> action, string operation)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var conn = CreateConnection();
+                return action(conn);
+            }
+            catch (Exception ex) when (ex is DirectoryOperationException or LdapException or InvalidOperationException)
+            {
+                _logger.LogError(ex, "{Operation} failed (Server={ServerType}, SearchBase={SearchBase})",
+                    operation, _profile.Type, _settings.SearchBase);
+                throw new DirectoryServiceException(BuildFriendlyMessage(ex), ex);
             }
         });
     }
 
+    private static string BuildFriendlyMessage(Exception ex) => ex switch
+    {
+        LdapException l => $"Cannot reach the directory server: {l.Message}",
+        DirectoryOperationException d => $"Directory rejected the operation: {d.Message}",
+        InvalidOperationException i => i.Message,
+        _ => $"Directory operation failed: {ex.Message}"
+    };
+
     private LdapConnection CreateConnection()
     {
         if (string.IsNullOrWhiteSpace(_settings.LdapUrl))
-            throw new InvalidOperationException("LDAP URL is not configured in ADSettings.LdapUrl");
+            throw new InvalidOperationException("LDAP URL is not configured (AD__LdapUrl)");
 
-        // parse possible formats: ldap://host:port, ldaps://host:port, host:port or just host
-        string host = _settings.LdapUrl;
-        int port = -1;
-        bool useSsl = false;
+        var (host, port, useSsl) = ParseLdapUrl(_settings.LdapUrl);
 
-        if (Uri.TryCreate(_settings.LdapUrl, UriKind.Absolute, out var uri))
-        {
-            host = uri.Host;
-            port = uri.Port;
-            useSsl = uri.Scheme.Equals("ldaps", StringComparison.OrdinalIgnoreCase);
-        }
-        else
-        {
-            // try host:port
-            var idx = _settings.LdapUrl.IndexOf(':');
-            if (idx > 0)
-            {
-                host = _settings.LdapUrl.Substring(0, idx);
-                if (int.TryParse(_settings.LdapUrl.Substring(idx + 1), out var p))
-                    port = p;
-            }
-        }
-
-        if (port == -1)
-            port = useSsl ? 636 : 389;
-
-        var identifier = new LdapDirectoryIdentifier(host, port, false, false);
-        var conn = new LdapConnection(identifier)
+        var conn = new LdapConnection(new LdapDirectoryIdentifier(host, port, false, false))
         {
             AuthType = AuthType.Basic
         };
-
-        // ProtocolVersion must be set for many servers
         conn.SessionOptions.ProtocolVersion = 3;
 
         if (useSsl)
         {
             conn.SessionOptions.SecureSocketLayer = true;
-
             if (_settings.AllowInvalidCertificate)
-            {
-                // Accept any server certificate (only for testing)
-                conn.SessionOptions.VerifyServerCertificate += (c, cert) => true;
-            }
+                conn.SessionOptions.VerifyServerCertificate += (_, _) => true;
         }
 
         conn.Credential = new NetworkCredential(_settings.BindDn, _settings.BindPassword);
         conn.Bind();
-
         return conn;
     }
 
-    public async Task CreateUser(string name, string email, string password, List<string> groups)
+    private static (string Host, int Port, bool UseSsl) ParseLdapUrl(string url)
     {
-        // Active Directory operations are synchronous in System.DirectoryServices.Protocols
-        await Task.Run(() =>
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
-            using var conn = CreateConnection();
+            var ssl = uri.Scheme.Equals("ldaps", StringComparison.OrdinalIgnoreCase);
+            var port = uri.Port > 0 ? uri.Port : (ssl ? 636 : 389);
+            return (uri.Host, port, ssl);
+        }
 
-            // Determine users/groups container DNs (supports full DN or OU relative to SearchBase)
-            var usersContainerDn = ResolveContainerDn(_settings.UsersContainer);
-            var groupsContainerDn = ResolveContainerDn(_settings.GroupsContainer);
+        var idx = url.IndexOf(':');
+        if (idx > 0 && int.TryParse(url[(idx + 1)..], out var p))
+            return (url[..idx], p, false);
 
-            // Create a CN-safe name and build DN
-            var cn = name;
-            var userDn = $"CN={EscapeRdn(cn)},{usersContainerDn}";
-
-            string sam = email.Contains('@') ? email.Split('@')[0] : email;
-            string upn;
-            if (email.Contains('@'))
-            {
-                upn = email;
-            }
-            else
-            {
-                var domain = DomainFromSearchBase(_settings.SearchBase) ?? "local";
-                upn = sam + "@" + domain;
-            }
-
-            // The `mail` attribute should be the invitation sender's email when configured.
-            // Otherwise fall back to the provided email (if it contains '@') or the computed UPN.
-            var mail = !string.IsNullOrWhiteSpace(_settings.InvitationSenderEmail)
-                ? _settings.InvitationSenderEmail
-                : (email.Contains('@') ? email : upn);
-
-            var attrs = new DirectoryAttributeCollection
-            {
-                new DirectoryAttribute("objectClass", new[] { "top", "person", "organizationalPerson", "user" }),
-                new DirectoryAttribute("cn", cn),
-                new DirectoryAttribute("displayName", name),
-                new DirectoryAttribute("sn", name),
-                new DirectoryAttribute("sAMAccountName", sam),
-                new DirectoryAttribute("userPrincipalName", upn),
-                new DirectoryAttribute("mail", mail)
-            };
-
-            var addRequest = new AddRequest(userDn);
-            foreach (DirectoryAttribute a in attrs)
-            {
-                addRequest.Attributes.Add(a);
-            }
-
-            try
-            {
-                conn.SendRequest(addRequest);
-            }
-            catch (DirectoryOperationException ex)
-            {
-                _logger.LogError(ex, "Failed to create AD user {UserDn}", userDn);
-                throw;
-            }
-
-            // Set password and enable account. Setting password requires LDAPS and specific attribute unicodePwd.
-            try
-            {
-                // set unicodePwd - requires secure connection (LDAPS)
-                var pwd = EncodePassword(password);
-                var modPwd = new DirectoryAttributeModification
-                {
-                    Name = "unicodePwd",
-                    Operation = DirectoryAttributeOperation.Replace
-                };
-                modPwd.Add(pwd);
-
-                var modifyPwd = new ModifyRequest(userDn, modPwd);
-                conn.SendRequest(modifyPwd);
-
-                // enable account: set userAccountControl to NORMAL_ACCOUNT (512)
-                var modUac = new DirectoryAttributeModification
-                {
-                    Name = "userAccountControl",
-                    Operation = DirectoryAttributeOperation.Replace
-                };
-                modUac.Add("512");
-                var modifyUac = new ModifyRequest(userDn, modUac);
-                conn.SendRequest(modifyUac);
-            }
-            catch (DirectoryOperationException ex)
-            {
-                _logger.LogWarning(ex, "Could not set password or enable account for {UserDn}. This often requires LDAPS.", userDn);
-            }
-
-            // Add to groups
-            foreach (var groupDnOrIdentifier in groups ?? Enumerable.Empty<string>())
-            {
-                try
-                {
-                    // if provided value looks like a DN (contains = and ,) use it directly, otherwise search by cn
-                    string groupDn = groupDnOrIdentifier;
-                    if (!groupDn.Contains("=", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // search for group by cn
-                        var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
-                        var gfilter = string.IsNullOrWhiteSpace(groupClassFilter)
-                            ? $"(cn={EscapeFilter(groupDnOrIdentifier)})"
-                            : $"(&{groupClassFilter}(cn={EscapeFilter(groupDnOrIdentifier)}))";
-
-                        var search = new SearchRequest(groupsContainerDn, gfilter, SearchScope.Subtree, null);
-                        var resp = (SearchResponse)conn.SendRequest(search);
-                        var entry = resp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
-                        if (entry == null)
-                        {
-                            _logger.LogWarning("Group {Group} not found in AD", groupDnOrIdentifier);
-                            continue;
-                        }
-                        groupDn = entry.DistinguishedName;
-                    }
-
-                    var mod = new DirectoryAttributeModification
-                    {
-                        Name = "member",
-                        Operation = DirectoryAttributeOperation.Add
-                    };
-                    mod.Add(userDn);
-                    var modification = new ModifyRequest(groupDn, mod);
-                    conn.SendRequest(modification);
-                }
-                catch (DirectoryOperationException ex)
-                {
-                    _logger.LogError(ex, "Failed to add user to group {Group} for user {User}", groupDnOrIdentifier, userDn);
-                }
-            }
-        });
+        return (url, 389, false);
     }
 
-    public async Task<List<(string Oid, string Name)>> GetRoles()
+    // ---------- DN / filter helpers ----------
+
+    private string ResolveContainerDn(string containerSetting)
     {
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using var conn = CreateConnection();
-
-                var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
-                var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
-                var filter = string.IsNullOrWhiteSpace(groupClassFilter) ? "(objectClass=group)" : groupClassFilter;
-
-                var search = new SearchRequest(groupsBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "cn" });
-                var resp = (SearchResponse)conn.SendRequest(search);
-
-                var result = new List<(string, string)>();
-
-                foreach (SearchResultEntry entry in resp.Entries)
-                {
-                    var dn = entry.DistinguishedName;
-                    var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
-                    result.Add((dn, cn));
-                }
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "GetRoles failed (SearchBase={SearchBase})", _settings.SearchBase);
-                return new List<(string, string)>();
-            }
-        });
+        var baseDn = _settings.SearchBase ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(containerSetting)) return baseDn;
+        if (LooksLikeDn(containerSetting)) return containerSetting;
+        if (!string.IsNullOrWhiteSpace(baseDn) &&
+            (containerSetting.Equals(baseDn, StringComparison.OrdinalIgnoreCase) ||
+             containerSetting.EndsWith($",{baseDn}", StringComparison.OrdinalIgnoreCase)))
+            return containerSetting;
+        return string.IsNullOrWhiteSpace(baseDn) ? containerSetting : $"{containerSetting},{baseDn}";
     }
 
-    public async Task<List<(string Dn, string Name)>> GetRoles(string? search)
+    private static string WrapClassFilter(string innerFilter, string[] objectClasses)
     {
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using var conn = CreateConnection();
-
-                var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
-                var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
-
-                var filter = string.IsNullOrWhiteSpace(search)
-                    ? (string.IsNullOrWhiteSpace(groupClassFilter) ? "(objectClass=group)" : groupClassFilter)
-                    : (string.IsNullOrWhiteSpace(groupClassFilter)
-                        ? $"(&(cn=*{EscapeFilter(search)}*))"
-                        : $"(&{groupClassFilter}(cn=*{EscapeFilter(search)}*))");
-
-                var searchReq = new SearchRequest(groupsBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "cn" });
-                var resp = (SearchResponse)conn.SendRequest(searchReq);
-
-                var result = new List<(string, string)>();
-                foreach (SearchResultEntry entry in resp.Entries)
-                {
-                    var dn = entry.DistinguishedName;
-                    var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
-                    result.Add((dn, cn));
-                }
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "GetRoles(search={Search}) failed (SearchBase={SearchBase})", search, _settings.SearchBase);
-                return new List<(string, string)>();
-            }
-        });
+        var classFilter = BuildObjectClassFilter(objectClasses);
+        if (string.IsNullOrEmpty(classFilter))
+            return string.IsNullOrEmpty(innerFilter) ? "(objectClass=*)" : innerFilter;
+        if (string.IsNullOrEmpty(innerFilter)) return classFilter;
+        return $"(&{classFilter}{innerFilter})";
     }
 
-    public async Task<List<(string Dn, string Name)>> GetUsers(string? search)
+    private static string BuildObjectClassFilter(string[] classes)
     {
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using var conn = CreateConnection();
-
-                var usersBase = ResolveContainerDn(_settings.UsersContainer);
-                var userClassFilter = BuildObjectClassFilter(_settings.UsersObjectClasses);
-
-                var filter = string.IsNullOrWhiteSpace(search)
-                    ? (string.IsNullOrWhiteSpace(userClassFilter) ? "(objectClass=user)" : userClassFilter)
-                    : (string.IsNullOrWhiteSpace(userClassFilter)
-                        ? $"(&(|(displayName=*{EscapeFilter(search)}*)(sAMAccountName=*{EscapeFilter(search)}*)(mail=*{EscapeFilter(search)}*)))"
-                        : $"(&{userClassFilter}(|(displayName=*{EscapeFilter(search)}*)(sAMAccountName=*{EscapeFilter(search)}*)(mail=*{EscapeFilter(search)}*)))");
-
-                var searchReq = new SearchRequest(usersBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "displayName", "sAMAccountName", "mail" });
-                var resp = (SearchResponse)conn.SendRequest(searchReq);
-
-                var result = new List<(string, string)>();
-                foreach (SearchResultEntry entry in resp.Entries)
-                {
-                    var dn = entry.DistinguishedName;
-                    var name = entry.Attributes["displayName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
-                               ?? entry.Attributes["sAMAccountName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
-                               ?? entry.Attributes["mail"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
-                               ?? dn;
-                    result.Add((dn, name));
-                }
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "GetUsers(search={Search}) failed (SearchBase={SearchBase})", search, _settings.SearchBase);
-                return new List<(string, string)>();
-            }
-        });
+        if (classes.Length == 0) return string.Empty;
+        if (classes.Length == 1) return $"(objectClass={EscapeFilter(classes[0])})";
+        return "(|" + string.Concat(classes.Select(c => $"(objectClass={EscapeFilter(c)})")) + ")";
     }
 
-    public async Task<List<(string Dn, string Name)>> GetUsersInGroup(string groupDn)
+    private static bool LooksLikeDn(string value) => value.Contains('=') && value.Contains(',');
+
+    private static string? GetAttribute(SearchResultEntry entry, string name)
     {
-        if (string.IsNullOrWhiteSpace(groupDn)) return new List<(string, string)>();
-
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using var conn = CreateConnection();
-
-                // Search for users that are memberOf the provided group DN
-                var usersBase = ResolveContainerDn(_settings.UsersContainer);
-                var userClassFilter = BuildObjectClassFilter(_settings.UsersObjectClasses);
-                var filter = string.IsNullOrWhiteSpace(userClassFilter)
-                    ? $"(&(memberOf={EscapeFilter(groupDn)})(objectClass=user))"
-                    : $"(&{userClassFilter}(memberOf={EscapeFilter(groupDn)}))";
-
-                var searchReq = new SearchRequest(usersBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "displayName", "sAMAccountName", "mail" });
-                var resp = (SearchResponse)conn.SendRequest(searchReq);
-
-                var result = new List<(string, string)>();
-                foreach (SearchResultEntry entry in resp.Entries)
-                {
-                    var dn = entry.DistinguishedName;
-                    var name = entry.Attributes["displayName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
-                               ?? entry.Attributes["sAMAccountName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
-                               ?? entry.Attributes["mail"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
-                               ?? dn;
-                    result.Add((dn, name));
-                }
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "GetUsersInGroup(groupDn={GroupDn}) failed (SearchBase={SearchBase})", groupDn, _settings.SearchBase);
-                return new List<(string, string)>();
-            }
-        });
+        var attr = entry.Attributes[name];
+        if (attr == null) return null;
+        return attr.GetValues(typeof(string)).Cast<string>().FirstOrDefault();
     }
 
-    public async Task<List<(string Dn, string Name)>> GetGroupsForUser(string userDn)
-    {
-        if (string.IsNullOrWhiteSpace(userDn)) return new List<(string, string)>();
+    private static byte[] EncodeAdPassword(string pwd) =>
+        Encoding.Unicode.GetBytes($"\"{pwd}\"");
 
-        return await Task.Run(() =>
-        {
-            try
-            {
-                using var conn = CreateConnection();
+    private static string EscapeRdn(string input) =>
+        input.Replace("\\", "\\\\").Replace(",", "\\,").Replace("=", "\\=");
 
-                // Search for groups where member attribute contains the user DN
-                var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
-                var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
-                var filter = string.IsNullOrWhiteSpace(groupClassFilter)
-                    ? $"(&(member={EscapeFilter(userDn)})(objectClass=group))"
-                    : $"(&{groupClassFilter}(member={EscapeFilter(userDn)}))";
-
-                var searchReq = new SearchRequest(groupsBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "cn" });
-                var resp = (SearchResponse)conn.SendRequest(searchReq);
-
-                var result = new List<(string, string)>();
-                foreach (SearchResultEntry entry in resp.Entries)
-                {
-                    var dn = entry.DistinguishedName;
-                    var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
-                    result.Add((dn, cn));
-                }
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "GetGroupsForUser(userDn={UserDn}) failed (SearchBase={SearchBase})", userDn, _settings.SearchBase);
-                return new List<(string, string)>();
-            }
-        });
-    }
-
-    private static byte[] EncodePassword(string pwd)
-    {
-        // unicodePwd needs to be a UTF-16LE quoted string
-        var quoted = "\"" + pwd + "\"";
-        return System.Text.Encoding.Unicode.GetBytes(quoted);
-    }
-
-    private static string EscapeRdn(string input)
-    {
-        // basic escaping for DN RDNs
-        return input.Replace("\\", "\\\\").Replace(",", "\\,").Replace("=", "\\=");
-    }
-
-    private static string EscapeFilter(string input)
-    {
-        return input.Replace("\\", "\\5c").Replace("*", "\\2a").Replace("(", "\\28").Replace(")", "\\29").Replace("\0", "\\00");
-    }
+    private static string EscapeFilter(string input) =>
+        input.Replace("\\", "\\5c").Replace("*", "\\2a").Replace("(", "\\28").Replace(")", "\\29").Replace("\0", "\\00");
 
     private static string? DomainFromSearchBase(string searchBase)
     {
         if (string.IsNullOrWhiteSpace(searchBase)) return null;
-        // parse DC=example,DC=com -> example.com
         try
         {
             var parts = searchBase.Split(',')
                 .Select(p => p.Trim())
                 .Where(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase))
-                .Select(p => p.Substring(3))
+                .Select(p => p[3..])
                 .ToArray();
-            if (parts.Length == 0) return null;
-            return string.Join('.', parts);
+            return parts.Length == 0 ? null : string.Join('.', parts);
         }
         catch
         {
             return null;
+        }
+    }
+
+    // ---------- Profile ----------
+
+    // Per-server-type configuration (attribute names, object classes, password rules).
+    // Active Directory takes priority and is the default; the LDAP profile covers OpenLDAP-style servers.
+    private sealed class DirectoryProfile
+    {
+        public DirectoryServerType Type { get; private init; }
+        public string[] UserObjectClasses { get; private init; } = Array.Empty<string>();
+        public string[] GroupObjectClasses { get; private init; } = Array.Empty<string>();
+        public string[] UserCreationObjectClasses { get; private init; } = Array.Empty<string>();
+        public string UsernameAttribute { get; private init; } = "sAMAccountName";
+
+        public string FirstNameAttribute => "givenName";
+        public string LastNameAttribute => "sn";
+        public string MailAttribute => "mail";
+        public string MemberAttribute => "member";
+        public string DisplayNameAttribute => Type == DirectoryServerType.ActiveDirectory ? "displayName" : "cn";
+        public string PasswordAttribute => Type == DirectoryServerType.ActiveDirectory ? "unicodePwd" : "userPassword";
+        public bool RequiresQuotedUtf16Password => Type == DirectoryServerType.ActiveDirectory;
+        public bool RequiresAccountEnable => Type == DirectoryServerType.ActiveDirectory;
+        // memberOf is reliable on AD; on plain LDAP it depends on the memberof overlay, so we resolve via the group's member list.
+        public bool SupportsMemberOf => Type == DirectoryServerType.ActiveDirectory;
+        public bool GroupRequiresInitialMember =>
+            Type != DirectoryServerType.ActiveDirectory &&
+            GroupObjectClasses.Any(c => c.Equals("groupOfNames", StringComparison.OrdinalIgnoreCase));
+
+        public string[] UserSearchAttributes => new[]
+        {
+            "distinguishedName", DisplayNameAttribute, FirstNameAttribute, LastNameAttribute, UsernameAttribute, MailAttribute
+        };
+
+        public string[] GroupSearchAttributes => new[] { "distinguishedName", "cn", MemberAttribute };
+
+        public static DirectoryProfile From(ADSettings settings)
+        {
+            var isAd = settings.ServerType == DirectoryServerType.ActiveDirectory;
+
+            var defaultUserClasses = isAd ? new[] { "user" } : new[] { "inetOrgPerson" };
+            var defaultGroupClasses = isAd ? new[] { "group" } : new[] { "groupOfNames" };
+            var defaultUsername = isAd ? "sAMAccountName" : "uid";
+
+            var userClasses = ParseCsv(settings.UsersObjectClasses, defaultUserClasses);
+            var groupClasses = ParseCsv(settings.GroupsObjectClasses, defaultGroupClasses);
+
+            // Object classes used when adding a new user. AD always needs the canonical chain;
+            // for LDAP we merge any extra classes the operator configured with the base inetOrgPerson chain.
+            var userCreationClasses = isAd
+                ? new[] { "top", "person", "organizationalPerson", "user" }
+                : MergeWithDefaults(userClasses, new[] { "top", "person", "organizationalPerson", "inetOrgPerson" });
+
+            return new DirectoryProfile
+            {
+                Type = settings.ServerType,
+                UserObjectClasses = userClasses,
+                GroupObjectClasses = groupClasses,
+                UserCreationObjectClasses = userCreationClasses,
+                UsernameAttribute = string.IsNullOrWhiteSpace(settings.UsernameAttribute)
+                    ? defaultUsername
+                    : settings.UsernameAttribute.Trim()
+            };
+        }
+
+        private static string[] ParseCsv(string csv, string[] fallback)
+        {
+            if (string.IsNullOrWhiteSpace(csv)) return fallback;
+            var parts = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return parts.Length == 0 ? fallback : parts;
+        }
+
+        private static string[] MergeWithDefaults(string[] configured, string[] defaults)
+        {
+            if (configured.Length == 0) return defaults;
+            return defaults.Concat(configured).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         }
     }
 }

@@ -2,7 +2,7 @@
     Layout = "_Layout";
 }
 
-<h2 class="mb-4">Manage AD - Groups / Users</h2>
+<h2 class="mb-4">Manage Directory - Groups / Users</h2>
 
 <div class="mb-3">
     <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary">← Pending Registrations</a>
@@ -63,6 +63,31 @@
             detailsArea.innerHTML = '';
         }
 
+        async function fetchJson(url) {
+            try {
+                const res = await fetch(url);
+                const body = await res.json().catch(() => null);
+                if (!res.ok) {
+                    const msg = body && body.error ? body.error : `Request failed: ${res.status}`;
+                    return { error: msg };
+                }
+                return { data: body };
+            } catch (err) {
+                console.error(err);
+                return { error: err.message || 'Network error' };
+            }
+        }
+
+        function escapeHtml(value) {
+            const div = document.createElement('div');
+            div.textContent = value ?? '';
+            return div.innerHTML;
+        }
+
+        function renderError(message) {
+            detailsArea.innerHTML = `<div class="alert alert-danger">${escapeHtml(message)}</div>`;
+        }
+
         function renderList(items, type) {
             itemList.innerHTML = '';
             listTitle.textContent = type === 'groups' ? 'Groups' : 'Users';
@@ -77,91 +102,97 @@
             });
         }
 
-        async function onSelectItem(dn, name, type) {
-            clearDetails();
-            if (type === 'groups') {
-                detailTitle.textContent = 'Users in ' + name;
-                detailsArea.innerHTML = '<div class="text-muted">Loading users...</div>';
-                const res = await fetch(`/Admin/GetUsersInGroup?groupDn=${encodeURIComponent(dn)}`);
-                const users = await res.json();
-                if (!users.length) {
-                    detailsArea.innerHTML = '<div class="alert alert-info">No users in this group</div>';
-                    return;
-                }
-                const ul = document.createElement('ul');
-                ul.className = 'list-group';
-                users.forEach(u => {
-                    const li = document.createElement('li');
-                    li.className = 'list-group-item list-group-item-action';
-                    li.textContent = u.name;
-                    li.dataset.dn = u.dn;
-                    li.style.cursor = 'pointer';
-                    li.addEventListener('click', () => onSelectUserFromGroup(u.dn, u.name));
-                    ul.appendChild(li);
-                });
-                detailsArea.innerHTML = '';
-                detailsArea.appendChild(ul);
-            } else {
-                detailTitle.textContent = 'Groups of ' + name;
-                detailsArea.innerHTML = '<div class="text-muted">Loading groups...</div>';
-                const res = await fetch(`/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`);
-                const groups = await res.json();
-                if (!groups.length) {
-                    detailsArea.innerHTML = '<div class="alert alert-info">User is not a member of any groups</div>';
-                    return;
-                }
-                const ul = document.createElement('ul');
-                ul.className = 'list-group';
-                groups.forEach(g => {
-                    const li = document.createElement('li');
-                    li.className = 'list-group-item';
-                    li.textContent = g.name;
-                    ul.appendChild(li);
-                });
-                detailsArea.innerHTML = '';
-                detailsArea.appendChild(ul);
-            }
-        }
-
-        async function onSelectUserFromGroup(dn, name) {
-            // when clicking a user in the group list, also load their groups
-            detailTitle.textContent = name + ' — groups';
-            detailsArea.innerHTML = '<div class="text-muted">Loading groups...</div>';
-            const res = await fetch(`/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`);
-            const groups = await res.json();
-            if (!groups.length) {
-                detailsArea.innerHTML = '<div class="alert alert-info">No groups for this user</div>';
+        function renderRelatedList(items, onClick, emptyMessage) {
+            if (!items.length) {
+                detailsArea.innerHTML = `<div class="alert alert-info">${escapeHtml(emptyMessage)}</div>`;
                 return;
             }
             const ul = document.createElement('ul');
             ul.className = 'list-group';
-            groups.forEach(g => {
+            items.forEach(i => {
                 const li = document.createElement('li');
-                li.className = 'list-group-item';
-                li.textContent = g.name;
+                li.className = onClick ? 'list-group-item list-group-item-action' : 'list-group-item';
+                li.textContent = i.name;
+                if (onClick) {
+                    li.dataset.dn = i.dn;
+                    li.style.cursor = 'pointer';
+                    li.addEventListener('click', () => onClick(i.dn, i.name));
+                }
                 ul.appendChild(li);
             });
             detailsArea.innerHTML = '';
             detailsArea.appendChild(ul);
         }
 
+        async function loadAndRender(url, onClick, loadingText, emptyMessage, errorPrefix) {
+            detailsArea.innerHTML = `<div class="text-muted">${escapeHtml(loadingText)}</div>`;
+            const result = await fetchJson(url);
+            if (result.error) {
+                renderError(`${errorPrefix}: ${result.error}`);
+                return;
+            }
+            renderRelatedList(result.data, onClick, emptyMessage);
+        }
+
+        async function onSelectItem(dn, name, type) {
+            clearDetails();
+            if (type === 'groups') {
+                detailTitle.textContent = 'Users in ' + name;
+                await loadAndRender(
+                    `/Admin/GetUsersInGroup?groupDn=${encodeURIComponent(dn)}`,
+                    onSelectUserFromGroup,
+                    'Loading users...',
+                    'No users in this group',
+                    'Failed to load users for this group'
+                );
+            } else {
+                detailTitle.textContent = 'Groups of ' + name;
+                await loadAndRender(
+                    `/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`,
+                    null,
+                    'Loading groups...',
+                    'User is not a member of any groups',
+                    'Failed to load groups for this user'
+                );
+            }
+        }
+
+        async function onSelectUserFromGroup(dn, name) {
+            detailTitle.textContent = name + ' — groups';
+            await loadAndRender(
+                `/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`,
+                null,
+                'Loading groups...',
+                'No groups for this user',
+                'Failed to load groups for this user'
+            );
+        }
+
         loadBtn.addEventListener('click', async () => {
             const view = viewSelect.value;
             const q = filterInput.value;
             clearDetails();
-            if (view === 'groups') {
-                detailTitle.textContent = 'Select a group';
-                detailsArea.innerHTML = '<div class="text-muted">Choose a group to see members</div>';
-                const res = await fetch(`/Admin/GetGroups?q=${encodeURIComponent(q)}`);
-                const groups = await res.json();
-                renderList(groups, 'groups');
-            } else {
-                detailTitle.textContent = 'Select a user';
-                detailsArea.innerHTML = '<div class="text-muted">Choose a user to see groups</div>';
-                const res = await fetch(`/Admin/GetUsers?q=${encodeURIComponent(q)}`);
-                const users = await res.json();
-                renderList(users, 'users');
+
+            const isGroups = view === 'groups';
+            detailTitle.textContent = isGroups ? 'Select a group' : 'Select a user';
+            detailsArea.innerHTML = isGroups
+                ? '<div class="text-muted">Choose a group to see members</div>'
+                : '<div class="text-muted">Choose a user to see groups</div>';
+
+            const url = isGroups
+                ? `/Admin/GetGroups?q=${encodeURIComponent(q)}`
+                : `/Admin/GetUsers?q=${encodeURIComponent(q)}`;
+            const errorPrefix = isGroups
+                ? 'Failed to load groups from directory'
+                : 'Failed to load users from directory';
+
+            const result = await fetchJson(url);
+            if (result.error) {
+                itemList.innerHTML = '';
+                renderError(`${errorPrefix}: ${result.error}`);
+                return;
             }
+            renderList(result.data, isGroups ? 'groups' : 'users');
         });
     </script>
 }

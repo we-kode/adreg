@@ -1,157 +1,137 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Shared.Data;
 using Shared.Models;
 using Shared.Services;
+using System.Text;
 using System.Text.Json;
 
-namespace AdminApp.Controllers
+namespace AdminApp.Controllers;
+
+[Authorize]
+public class AdminController(
+    AppDbContext db,
+    MailService mail,
+    ADService adService,
+    IConfiguration config,
+    ILogger<AdminController> logger) : Controller
 {
-    [Authorize]
-    public class AdminController(AppDbContext db, MailService mail, ADService adService, IConfiguration config) : Controller
+    public IActionResult Index()
     {
-        public IActionResult Index()
-        {
-            // Do not expose PasswordBase64 to the admin UI — project to instances without the password
-            var list = db.PendingRegistrations
-                .OrderByDescending(x => x.Id)
-                .Select(p => new Shared.Models.PendingRegistrationDto
-                {
-                    Id = p.Id,
-                    FirstName = p.FirstName,
-                    LastName = p.LastName,
-                    Username = p.Username,
-                    GroupsJson = p.GroupsJson
-                })
-                .ToList();
-
-            return View(list);
-        }
-
-        [HttpPost]
-        public async Task<IActionResult> Approve(int id)
-        {
-            var req = await db.PendingRegistrations.FindAsync(id);
-
-            if (req == null) return RedirectToAction("Index", "Admin");
-
-            // decode password from Base64 and call AD service. ADService will accept a username (without @) and build an UPN
-            string password = null;
-            try
+        var list = db.PendingRegistrations
+            .OrderByDescending(x => x.Id)
+            .Select(p => new PendingRegistrationDto
             {
-                if (!string.IsNullOrEmpty(req.PasswordBase64))
-                    password = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(req.PasswordBase64));
-            }
-            catch { password = null; }
+                Id = p.Id,
+                FirstName = p.FirstName,
+                LastName = p.LastName,
+                Username = p.Username,
+                GroupsJson = p.GroupsJson
+            })
+            .ToList();
 
-            await adService.CreateUser(req.FirstName + " " + req.LastName, req.Username, password, JsonSerializer.Deserialize<List<string>>(req.GroupsJson) ?? []);
+        return View(list);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Approve(int id)
+    {
+        var req = await db.PendingRegistrations.FindAsync(id);
+        if (req == null) return RedirectToAction("Index");
+
+        try
+        {
+            var password = DecodePassword(req.PasswordBase64);
+            var groups = JsonSerializer.Deserialize<List<string>>(req.GroupsJson) ?? new List<string>();
+
+            await adService.CreateUser(req.FirstName, req.LastName, req.Username, password, groups);
 
             db.PendingRegistrations.Remove(req);
             await db.SaveChangesAsync();
 
             TempData["Success"] = "User approved";
-
-            return RedirectToAction("Index");
+        }
+        catch (Exception ex)
+        {
+            HandleError(ex, $"Approve registration {id}", "Failed to create user in directory");
         }
 
-        [HttpPost]
-        public async Task<IActionResult> Reject(int id)
+        return RedirectToAction("Index");
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Reject(int id)
+    {
+        var req = await db.PendingRegistrations.FindAsync(id);
+        if (req != null)
         {
-            var req = await db.PendingRegistrations.FindAsync(id);
-
-            if (req == null) return RedirectToAction("Index", "Admin");
-
             db.PendingRegistrations.Remove(req);
             await db.SaveChangesAsync();
-
             TempData["Success"] = "User rejected";
-
-            return RedirectToAction("Index", "Admin");
         }
+        return RedirectToAction("Index");
+    }
 
-        [HttpGet]
-        public async Task<IActionResult> CreateLink()
+    [HttpGet]
+    public async Task<IActionResult> CreateLink()
+    {
+        ViewBag.Groups = await SafeGetGroups();
+        return View();
+    }
+
+    [HttpGet] public IActionResult CreateGroup() => View();
+
+    [HttpGet] public IActionResult Manage() => View();
+
+    [HttpPost]
+    public async Task<IActionResult> CreateGroup(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
         {
-            var groups = await adService.GetRoles();
-            ViewBag.Groups = groups;
+            TempData["Error"] = "Group name is required";
             return View();
         }
 
-        [HttpGet]
-        public IActionResult CreateGroup()
+        try
         {
-            return View();
-        }
-
-        [HttpGet]
-        public IActionResult Manage()
-        {
-            // view that allows switching between groups and users and performs backend filtering
-            return View();
-        }
-
-        [HttpPost]
-        public async Task<IActionResult> CreateGroup(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name))
+            var created = await adService.CreateGroup(name);
+            if (!created)
             {
-                TempData["Error"] = "Group name is required";
+                TempData["Error"] = "Group already exists";
                 return View();
             }
 
-            try
-            {
-                var created = await adService.CreateGroup(name);
-                if (!created)
-                {
-                    TempData["Error"] = "Group already exists";
-                    return View();
-                }
-
-                TempData["Success"] = "Group created";
-                return RedirectToAction("Manage", "Admin");
-            }
-            catch (Exception)
-            {
-                TempData["Error"] = "Failed to create group";
-                return View();
-            }
+            TempData["Success"] = "Group created";
+            return RedirectToAction("Manage");
         }
-
-        [HttpGet]
-        public async Task<IActionResult> GetGroups(string? q)
+        catch (Exception ex)
         {
-            var groups = await adService.GetRoles(q);
-            var result = groups.Select(g => new { dn = g.Dn, name = g.Name }).ToList();
-            return Json(result);
+            HandleError(ex, $"Create group {name}", "Failed to create group");
+            return View();
         }
+    }
 
-        [HttpGet]
-        public async Task<IActionResult> GetUsers(string? q)
-        {
-            var users = await adService.GetUsers(q);
-            var result = users.Select(u => new { dn = u.Dn, name = u.Name }).ToList();
-            return Json(result);
-        }
+    [HttpGet]
+    public Task<IActionResult> GetGroups(string? q) =>
+        DirectoryJson(() => adService.GetGroups(q), "groups");
 
-        [HttpGet]
-        public async Task<IActionResult> GetUsersInGroup(string groupDn)
-        {
-            var users = await adService.GetUsersInGroup(groupDn);
-            var result = users.Select(u => new { dn = u.Dn, name = u.Name }).ToList();
-            return Json(result);
-        }
+    [HttpGet]
+    public Task<IActionResult> GetUsers(string? q) =>
+        DirectoryJson(() => adService.GetUsers(q), "users");
 
-        [HttpGet]
-        public async Task<IActionResult> GetGroupsForUser(string userDn)
-        {
-            var groups = await adService.GetGroupsForUser(userDn);
-            var result = groups.Select(g => new { dn = g.Dn, name = g.Name }).ToList();
-            return Json(result);
-        }
+    [HttpGet]
+    public Task<IActionResult> GetUsersInGroup(string groupDn) =>
+        DirectoryJson(() => adService.GetUsersInGroup(groupDn), "users in group");
 
-        [HttpPost]
-        public async Task<IActionResult> CreateLink(DateTime? validUntil, bool singleUse, string email, List<string>? selectedGroups)
+    [HttpGet]
+    public Task<IActionResult> GetGroupsForUser(string userDn) =>
+        DirectoryJson(() => adService.GetGroupsForUser(userDn), "groups for user");
+
+    [HttpPost]
+    public async Task<IActionResult> CreateLink(DateTime? validUntil, bool singleUse, string email, List<string>? selectedGroups)
+    {
+        try
         {
             var link = new RegistrationLink
             {
@@ -165,15 +145,69 @@ namespace AdminApp.Controllers
             db.Links.Add(link);
             await db.SaveChangesAsync();
 
-            var request = HttpContext.Request;
             var baseUrl = config.GetValue<string?>("LinkBaseUrl");
-            var url = $"{baseUrl}/Register/{link.Id}";
-
-            await mail.SendRegistrationLink(email, url);
+            await mail.SendRegistrationLink(email, $"{baseUrl}/Register/{link.Id}");
 
             TempData["Success"] = "Link created & mail sent";
+        }
+        catch (Exception ex)
+        {
+            HandleError(ex, "Create registration link", "Failed to create or send link");
+        }
 
-            return RedirectToAction("Index", "Admin");
+        return RedirectToAction("Index");
+    }
+
+    // ---------- Helpers ----------
+
+    private async Task<List<DirectoryItem>> SafeGetGroups()
+    {
+        try
+        {
+            return await adService.GetGroups();
+        }
+        catch (DirectoryServiceException ex)
+        {
+            logger.LogError(ex, "Failed to load groups for view");
+            TempData["Error"] = $"Could not load directory groups: {ex.Message}";
+            return new List<DirectoryItem>();
+        }
+    }
+
+    private async Task<IActionResult> DirectoryJson(Func<Task<List<DirectoryItem>>> fetch, string what)
+    {
+        try
+        {
+            var items = await fetch();
+            return Json(items.Select(i => new { dn = i.Dn, name = i.Name }));
+        }
+        catch (DirectoryServiceException ex)
+        {
+            logger.LogError(ex, "Failed to load {What}", what);
+            Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            return Json(new { error = $"Failed to load {what}: {ex.Message}" });
+        }
+    }
+
+    private void HandleError(Exception ex, string action, string userPrefix)
+    {
+        logger.LogError(ex, "{Action} failed", action);
+        var message = ex is DirectoryServiceException
+            ? $"{userPrefix}: {ex.Message}"
+            : $"Unexpected error during {action.ToLowerInvariant()}.";
+        TempData["Error"] = message;
+    }
+
+    private static string DecodePassword(string? base64)
+    {
+        if (string.IsNullOrEmpty(base64)) return string.Empty;
+        try
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(base64));
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 }
