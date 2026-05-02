@@ -151,5 +151,3 @@ Quick checklist before deployment:
 1. Configure all required variables for the mail SMTP server and Active Directory (see example above).
 2. Optional and default values can be adjusted as needed.
 3. Start the apps. The admin app runs by default on port 8081 and the registration app on port 8082.
-
-```
