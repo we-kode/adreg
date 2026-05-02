@@ -14,15 +14,14 @@
 
             <a class="navbar-brand" href="/Admin">Admin Portal</a>
 
-            <div class="d-flex">
-                <a class="btn btn-outline-light btn-sm me-2" href="/Admin/CreateLink">
-                    ➕ New Link
-                </a>
-
-                <a class="btn btn-outline-danger btn-sm" href="/Auth/Logout">
-                    Logout
-                </a>
-            </div>
+            @if (User?.Identity?.IsAuthenticated == true)
+            {
+                <div class="d-flex">
+                    <a class="btn btn-outline-light btn-sm me-2" href="/Admin/CreateLink">➕ New Link</a>
+                    <a class="btn btn-outline-light btn-sm me-2" href="/Admin/CreateGroup">🗂️ New Group</a>
+                    <a class="btn btn-outline-danger btn-sm" href="/Auth/Logout">Logout</a>
+                </div>
+            }
         </div>
     </nav>
 
@@ -41,6 +40,8 @@
         @RenderBody()
 
     </div>
+
+    @RenderSection("Scripts", required: false)
 
 </body>
 </html>

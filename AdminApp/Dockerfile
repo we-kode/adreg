@@ -1,10 +1,21 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libldap2 \
+    libldap-common \
+    libsasl2-2 \
+    libsasl2-modules && \
+    rm -rf /var/lib/apt/lists/*
+
+#bug dotnet requires libldap-2.5.so.0 library
+RUN ln -sf /usr/lib/x86_64-linux-gnu/libldap.so.2 /usr/lib/x86_64-linux-gnu/libldap-2.5.so.0 && \
+    ln -sf /usr/lib/x86_64-linux-gnu/liblber.so.2 /usr/lib/x86_64-linux-gnu/liblber-2.5.so.0
+
 ARG USERNAME=wekode
 ARG UID
 ARG GID
-run groupadd --gid $GID $USERNAME \
+RUN groupadd --gid $GID $USERNAME \
     && useradd --uid $UID --gid $GID -m $USERNAME
-user $USERNAME
+USER $USERNAME
 WORKDIR /app
 EXPOSE 8080
 

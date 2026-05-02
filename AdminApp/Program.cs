@@ -27,7 +27,7 @@ builder.Services.AddAuthentication("Cookies")
         o.LoginPath = "/Auth/Login";
         o.Cookie.HttpOnly = true;
         o.Cookie.SameSite = SameSiteMode.Strict;
-        o.Cookie.SecurePolicy = CookieSecurePolicy.Always; 
+        o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest; 
         o.ExpireTimeSpan = TimeSpan.FromHours(24);
         o.SlidingExpiration = true;
     });

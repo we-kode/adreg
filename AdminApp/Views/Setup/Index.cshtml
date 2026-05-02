@@ -1,4 +1,6 @@
-﻿<div class="row justify-content-center">
+﻿@model AdminApp.Models.SetupViewModel
+
+<div class="row justify-content-center">
     <div class="col-md-4">
 
         <div class="card shadow">
@@ -9,11 +11,30 @@
                 <p>Create your admin account</p>
 
                 <form method="post" asp-action="Create">
-                    <input name="username" class="form-control mb-2" placeholder="Admin Username" />
-                    <input type="password" name="password" class="form-control mb-3" placeholder="Password" />
+                    <div class="mb-3">
+                        <label asp-for="Username" class="form-label"></label>
+                        <input asp-for="Username" class="form-control" />
+                        <span asp-validation-for="Username" class="text-danger"></span>
+                    </div>
+
+                    <div class="mb-3">
+                        <label asp-for="Password" class="form-label"></label>
+                        <input asp-for="Password" class="form-control" />
+                        <span asp-validation-for="Password" class="text-danger"></span>
+                    </div>
+
+                    <div class="mb-3">
+                        <label asp-for="ConfirmPassword" class="form-label"></label>
+                        <input asp-for="ConfirmPassword" class="form-control" />
+                        <span asp-validation-for="ConfirmPassword" class="text-danger"></span>
+                    </div>
+
+                    <div asp-validation-summary="ModelOnly" class="text-danger mb-2"></div>
 
                     <button class="btn btn-success w-100">Create Admin</button>
                 </form>
+
+                @await Html.PartialAsync("_ValidationScriptsPartial")
 
             </div>
         </div>

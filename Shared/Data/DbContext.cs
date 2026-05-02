@@ -13,9 +13,9 @@ public class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // optional: Index auf Email für PendingRegistrations
+        // optional: Index auf Username für PendingRegistrations
         modelBuilder.Entity<PendingRegistration>()
-            .HasIndex(p => p.Email)
+            .HasIndex(p => p.Username)
             .IsUnique(false);
     }
 }

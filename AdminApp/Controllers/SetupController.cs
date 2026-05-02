@@ -5,25 +5,24 @@ namespace AdminApp.Controllers
 {
     public class SetupController(AuthService auth) : Controller
     {
-        [HttpGet()]
+        [HttpGet]
         public async Task<IActionResult> Index()
         {
             if (auth.HasAdminUser)
                 return RedirectToAction("Login", "Auth");
 
-            return View();
+            return View(new AdminApp.Models.SetupViewModel());
         }
 
-        [HttpPost()]
-        public async Task<IActionResult> Create([FromForm]string username, [FromForm]string password)
+        [HttpPost]
+        public async Task<IActionResult> Create([FromForm] AdminApp.Models.SetupViewModel model)
         {
-            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+            if (!ModelState.IsValid)
             {
-                TempData["Error"] = "Invalid input";
-                return View("Index");
+                return View("Index", model);
             }
 
-            await auth.CreateAdmin(username, password);
+            await auth.CreateAdmin(model.Username, model.Password);
 
             return RedirectToAction("Login", "Auth");
         }

@@ -11,6 +11,15 @@ public class ADSettings
     public string SearchBase { get; set; } = string.Empty;
     // Optional container/OU where new users should be created (relative to SearchBase or full DN)
     public string UsersContainer { get; set; } = string.Empty;
+    // Optional container/OU where groups live (relative to SearchBase or full DN)
+    public string GroupsContainer { get; set; } = string.Empty;
+    // Comma-separated object classes to consider users (e.g. "user,inetOrgPerson")
+    public string UsersObjectClasses { get; set; } = "user";
+    // Comma-separated object classes to consider groups (e.g. "group,groupOfNames")
+    public string GroupsObjectClasses { get; set; } = "group";
+    // Optional email address used as sender for invitation links. If set, this address will be
+    // written to the user's `mail` attribute in AD instead of the user's own email.
+    public string InvitationSenderEmail { get; set; } = string.Empty;
     // If true the LDAP server certificate will not be validated. Use only for testing.
     public bool AllowInvalidCertificate { get; set; } = false;
 }

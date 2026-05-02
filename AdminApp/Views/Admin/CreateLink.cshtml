@@ -11,12 +11,13 @@
         <form method="post" asp-action="CreateLink">
 
             <div class="mb-3">
-                <label>Valid Until</label>
-                <input type="datetime-local" name="validUntil" class="form-control" required />
+                <label>Valid Until (optional)</label>
+                <input type="datetime-local" name="validUntil" class="form-control" />
+                <small class="form-text text-muted">Leave empty for no expiration</small>
             </div>
 
             <div class="form-check mb-3">
-                <input type="checkbox" name="singleUse" class="form-check-input" />
+                <input type="checkbox" name="singleUse" class="form-check-input" checked />
                 <label class="form-check-label">Single Use</label>
             </div>
 
@@ -39,6 +40,8 @@
             <button class="btn btn-primary">
                 Create & Send Link
             </button>
+
+            <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary ms-2">Cancel</a>
 
         </form>
 

@@ -1,0 +1,167 @@
+@{
+    Layout = "_Layout";
+}
+
+<h2 class="mb-4">Manage AD - Groups / Users</h2>
+
+<div class="mb-3">
+    <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary">← Pending Registrations</a>
+</div>
+
+<div class="row">
+    <div class="col-md-4">
+        <div class="card shadow-sm mb-3">
+            <div class="card-body">
+                <div class="mb-2">
+                    <label class="form-label">View</label>
+                    <select id="viewSelect" class="form-select">
+                        <option value="groups">Groups</option>
+                        <option value="users">Users</option>
+                    </select>
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label">Filter</label>
+                    <input id="filterInput" class="form-control" placeholder="search by name" />
+                </div>
+
+                <div class="d-grid">
+                    <button id="loadBtn" class="btn btn-primary">Load</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h5 id="listTitle">Groups</h5>
+                <ul id="itemList" class="list-group list-group-flush" style="max-height:60vh; overflow:auto"></ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-8">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h5 id="detailTitle">Details</h5>
+                <div id="detailsArea">Select a group or user to load related items.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        const loadBtn = document.getElementById('loadBtn');
+        const viewSelect = document.getElementById('viewSelect');
+        const filterInput = document.getElementById('filterInput');
+        const itemList = document.getElementById('itemList');
+        const detailTitle = document.getElementById('detailTitle');
+        const detailsArea = document.getElementById('detailsArea');
+        const listTitle = document.getElementById('listTitle');
+
+        function clearDetails() {
+            detailsArea.innerHTML = '';
+        }
+
+        function renderList(items, type) {
+            itemList.innerHTML = '';
+            listTitle.textContent = type === 'groups' ? 'Groups' : 'Users';
+            items.forEach(i => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item list-group-item-action';
+                li.textContent = i.name;
+                li.dataset.dn = i.dn;
+                li.style.cursor = 'pointer';
+                li.addEventListener('click', () => onSelectItem(i.dn, i.name, type));
+                itemList.appendChild(li);
+            });
+        }
+
+        async function onSelectItem(dn, name, type) {
+            clearDetails();
+            if (type === 'groups') {
+                detailTitle.textContent = 'Users in ' + name;
+                detailsArea.innerHTML = '<div class="text-muted">Loading users...</div>';
+                const res = await fetch(`/Admin/GetUsersInGroup?groupDn=${encodeURIComponent(dn)}`);
+                const users = await res.json();
+                if (!users.length) {
+                    detailsArea.innerHTML = '<div class="alert alert-info">No users in this group</div>';
+                    return;
+                }
+                const ul = document.createElement('ul');
+                ul.className = 'list-group';
+                users.forEach(u => {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item list-group-item-action';
+                    li.textContent = u.name;
+                    li.dataset.dn = u.dn;
+                    li.style.cursor = 'pointer';
+                    li.addEventListener('click', () => onSelectUserFromGroup(u.dn, u.name));
+                    ul.appendChild(li);
+                });
+                detailsArea.innerHTML = '';
+                detailsArea.appendChild(ul);
+            } else {
+                detailTitle.textContent = 'Groups of ' + name;
+                detailsArea.innerHTML = '<div class="text-muted">Loading groups...</div>';
+                const res = await fetch(`/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`);
+                const groups = await res.json();
+                if (!groups.length) {
+                    detailsArea.innerHTML = '<div class="alert alert-info">User is not a member of any groups</div>';
+                    return;
+                }
+                const ul = document.createElement('ul');
+                ul.className = 'list-group';
+                groups.forEach(g => {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item';
+                    li.textContent = g.name;
+                    ul.appendChild(li);
+                });
+                detailsArea.innerHTML = '';
+                detailsArea.appendChild(ul);
+            }
+        }
+
+        async function onSelectUserFromGroup(dn, name) {
+            // when clicking a user in the group list, also load their groups
+            detailTitle.textContent = name + ' — groups';
+            detailsArea.innerHTML = '<div class="text-muted">Loading groups...</div>';
+            const res = await fetch(`/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`);
+            const groups = await res.json();
+            if (!groups.length) {
+                detailsArea.innerHTML = '<div class="alert alert-info">No groups for this user</div>';
+                return;
+            }
+            const ul = document.createElement('ul');
+            ul.className = 'list-group';
+            groups.forEach(g => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.textContent = g.name;
+                ul.appendChild(li);
+            });
+            detailsArea.innerHTML = '';
+            detailsArea.appendChild(ul);
+        }
+
+        loadBtn.addEventListener('click', async () => {
+            const view = viewSelect.value;
+            const q = filterInput.value;
+            clearDetails();
+            if (view === 'groups') {
+                detailTitle.textContent = 'Select a group';
+                detailsArea.innerHTML = '<div class="text-muted">Choose a group to see members</div>';
+                const res = await fetch(`/Admin/GetGroups?q=${encodeURIComponent(q)}`);
+                const groups = await res.json();
+                renderList(groups, 'groups');
+            } else {
+                detailTitle.textContent = 'Select a user';
+                detailsArea.innerHTML = '<div class="text-muted">Choose a user to see groups</div>';
+                const res = await fetch(`/Admin/GetUsers?q=${encodeURIComponent(q)}`);
+                const users = await res.json();
+                renderList(users, 'users');
+            }
+        });
+    </script>
+}

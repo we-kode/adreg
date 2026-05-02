@@ -17,6 +17,83 @@ public class ADService
         _logger = logger;
     }
 
+    private string ResolveContainerDn(string containerSetting)
+    {
+        var baseDn = _settings.SearchBase ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(containerSetting))
+            return baseDn;
+
+        // If the container setting already looks like a full DN (contains =), return as-is
+        if (containerSetting.Contains('=') && containerSetting.Contains(','))
+            return containerSetting;
+
+        // If it already ends with the base dn, return as-is
+        if (!string.IsNullOrWhiteSpace(baseDn) && (containerSetting.Equals(baseDn, StringComparison.OrdinalIgnoreCase)
+                                                    || containerSetting.EndsWith($"," + baseDn, StringComparison.OrdinalIgnoreCase)))
+            return containerSetting;
+
+        // Otherwise treat it as relative and append the configured SearchBase
+        if (string.IsNullOrWhiteSpace(baseDn))
+            return containerSetting;
+
+        return containerSetting + "," + baseDn;
+    }
+
+    private string BuildObjectClassFilter(string csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return "";
+        var parts = csv.Split(',').Select(p => p.Trim()).Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+        if (parts.Length == 0) return "";
+        if (parts.Length == 1) return $"(objectClass={EscapeFilter(parts[0])})";
+        return "(|" + string.Join(string.Empty, parts.Select(p => $"(objectClass={EscapeFilter(p)})")) + ")";
+    }
+
+    public async Task<bool> CreateGroup(string groupName)
+    {
+        if (string.IsNullOrWhiteSpace(groupName))
+            throw new ArgumentException("Group name must be provided", nameof(groupName));
+
+        return await Task.Run(() =>
+        {
+            using var conn = CreateConnection();
+
+            var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+            var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
+
+            // Check if a group with that CN already exists
+            var searchFilter = string.IsNullOrWhiteSpace(groupClassFilter)
+                ? $"(cn={EscapeFilter(groupName)})"
+                : $"(&{groupClassFilter}(cn={EscapeFilter(groupName)}))";
+
+            var search = new SearchRequest(groupsBase, searchFilter, SearchScope.Subtree, null);
+            var resp = (SearchResponse)conn.SendRequest(search);
+            if (resp.Entries.Count > 0)
+            {
+                return false; // already exists
+            }
+
+            // Create the group under the resolved groups container
+            var dn = $"CN={EscapeRdn(groupName)},{groupsBase}";
+
+            var add = new AddRequest(dn,
+                 new DirectoryAttribute("objectClass", "group"),
+                 new DirectoryAttribute("cn", groupName),
+                 new DirectoryAttribute("sAMAccountName", groupName)
+             );
+
+            try
+            {
+                conn.SendRequest(add);
+                return true;
+            }
+            catch (DirectoryOperationException ex)
+            {
+                _logger.LogError(ex, "Failed to create AD group {GroupDn}", dn);
+                throw;
+            }
+        });
+    }
+
     private LdapConnection CreateConnection()
     {
         if (string.IsNullOrWhiteSpace(_settings.LdapUrl))
@@ -81,32 +158,41 @@ public class ADService
         {
             using var conn = CreateConnection();
 
-            // Determine users container DN
-            var usersContainer = _settings.UsersContainer;
-            var baseDn = _settings.SearchBase;
+            // Determine users/groups container DNs (supports full DN or OU relative to SearchBase)
+            var usersContainerDn = ResolveContainerDn(_settings.UsersContainer);
+            var groupsContainerDn = ResolveContainerDn(_settings.GroupsContainer);
 
-            string containerDn;
-            if (string.IsNullOrEmpty(usersContainer))
-                containerDn = baseDn;
-            else if (usersContainer.EndsWith($",{baseDn}", StringComparison.OrdinalIgnoreCase) || usersContainer.Equals(baseDn, StringComparison.OrdinalIgnoreCase))
-                containerDn = usersContainer;
-            else
-                containerDn = $"{usersContainer},{baseDn}";
-
-            // Create a CN-safe name
+            // Create a CN-safe name and build DN
             var cn = name;
+            var userDn = $"CN={EscapeRdn(cn)},{usersContainerDn}";
 
-            // Build DN
-            var userDn = $"CN={EscapeRdn(cn)},{containerDn}";
+            string sam = email.Contains('@') ? email.Split('@')[0] : email;
+            string upn;
+            if (email.Contains('@'))
+            {
+                upn = email;
+            }
+            else
+            {
+                var domain = DomainFromSearchBase(_settings.SearchBase) ?? "local";
+                upn = sam + "@" + domain;
+            }
+
+            // The `mail` attribute should be the invitation sender's email when configured.
+            // Otherwise fall back to the provided email (if it contains '@') or the computed UPN.
+            var mail = !string.IsNullOrWhiteSpace(_settings.InvitationSenderEmail)
+                ? _settings.InvitationSenderEmail
+                : (email.Contains('@') ? email : upn);
 
             var attrs = new DirectoryAttributeCollection
             {
                 new DirectoryAttribute("objectClass", new[] { "top", "person", "organizationalPerson", "user" }),
                 new DirectoryAttribute("cn", cn),
                 new DirectoryAttribute("displayName", name),
-                new DirectoryAttribute("sAMAccountName", email.Split('@')[0]),
-                new DirectoryAttribute("userPrincipalName", email),
-                new DirectoryAttribute("mail", email)
+                new DirectoryAttribute("sn", name),
+                new DirectoryAttribute("sAMAccountName", sam),
+                new DirectoryAttribute("userPrincipalName", upn),
+                new DirectoryAttribute("mail", mail)
             };
 
             var addRequest = new AddRequest(userDn);
@@ -165,7 +251,12 @@ public class ADService
                     if (!groupDn.Contains("=", StringComparison.OrdinalIgnoreCase))
                     {
                         // search for group by cn
-                        var search = new SearchRequest(_settings.SearchBase, $"(&(objectClass=group)(cn={EscapeFilter(groupDnOrIdentifier)}))", SearchScope.Subtree, null);
+                        var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
+                        var gfilter = string.IsNullOrWhiteSpace(groupClassFilter)
+                            ? $"(cn={EscapeFilter(groupDnOrIdentifier)})"
+                            : $"(&{groupClassFilter}(cn={EscapeFilter(groupDnOrIdentifier)}))";
+
+                        var search = new SearchRequest(groupsContainerDn, gfilter, SearchScope.Subtree, null);
                         var resp = (SearchResponse)conn.SendRequest(search);
                         var entry = resp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
                         if (entry == null)
@@ -197,21 +288,191 @@ public class ADService
     {
         return await Task.Run(() =>
         {
-            using var conn = CreateConnection();
-
-            var search = new SearchRequest(_settings.SearchBase, "(objectClass=group)", SearchScope.Subtree, new[] { "distinguishedName", "cn" });
-            var resp = (SearchResponse)conn.SendRequest(search);
-
-            var result = new List<(string, string)>();
-
-            foreach (SearchResultEntry entry in resp.Entries)
+            try
             {
-                var dn = entry.DistinguishedName;
-                var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
-                result.Add((dn, cn));
-            }
+                using var conn = CreateConnection();
 
-            return result;
+                var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+                var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
+                var filter = string.IsNullOrWhiteSpace(groupClassFilter) ? "(objectClass=group)" : groupClassFilter;
+
+                var search = new SearchRequest(groupsBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "cn" });
+                var resp = (SearchResponse)conn.SendRequest(search);
+
+                var result = new List<(string, string)>();
+
+                foreach (SearchResultEntry entry in resp.Entries)
+                {
+                    var dn = entry.DistinguishedName;
+                    var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
+                    result.Add((dn, cn));
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetRoles failed (SearchBase={SearchBase})", _settings.SearchBase);
+                return new List<(string, string)>();
+            }
+        });
+    }
+
+    public async Task<List<(string Dn, string Name)>> GetRoles(string? search)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var conn = CreateConnection();
+
+                var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+                var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
+
+                var filter = string.IsNullOrWhiteSpace(search)
+                    ? (string.IsNullOrWhiteSpace(groupClassFilter) ? "(objectClass=group)" : groupClassFilter)
+                    : (string.IsNullOrWhiteSpace(groupClassFilter)
+                        ? $"(&(cn=*{EscapeFilter(search)}*))"
+                        : $"(&{groupClassFilter}(cn=*{EscapeFilter(search)}*))");
+
+                var searchReq = new SearchRequest(groupsBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "cn" });
+                var resp = (SearchResponse)conn.SendRequest(searchReq);
+
+                var result = new List<(string, string)>();
+                foreach (SearchResultEntry entry in resp.Entries)
+                {
+                    var dn = entry.DistinguishedName;
+                    var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
+                    result.Add((dn, cn));
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetRoles(search={Search}) failed (SearchBase={SearchBase})", search, _settings.SearchBase);
+                return new List<(string, string)>();
+            }
+        });
+    }
+
+    public async Task<List<(string Dn, string Name)>> GetUsers(string? search)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var conn = CreateConnection();
+
+                var usersBase = ResolveContainerDn(_settings.UsersContainer);
+                var userClassFilter = BuildObjectClassFilter(_settings.UsersObjectClasses);
+
+                var filter = string.IsNullOrWhiteSpace(search)
+                    ? (string.IsNullOrWhiteSpace(userClassFilter) ? "(objectClass=user)" : userClassFilter)
+                    : (string.IsNullOrWhiteSpace(userClassFilter)
+                        ? $"(&(|(displayName=*{EscapeFilter(search)}*)(sAMAccountName=*{EscapeFilter(search)}*)(mail=*{EscapeFilter(search)}*)))"
+                        : $"(&{userClassFilter}(|(displayName=*{EscapeFilter(search)}*)(sAMAccountName=*{EscapeFilter(search)}*)(mail=*{EscapeFilter(search)}*)))");
+
+                var searchReq = new SearchRequest(usersBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "displayName", "sAMAccountName", "mail" });
+                var resp = (SearchResponse)conn.SendRequest(searchReq);
+
+                var result = new List<(string, string)>();
+                foreach (SearchResultEntry entry in resp.Entries)
+                {
+                    var dn = entry.DistinguishedName;
+                    var name = entry.Attributes["displayName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
+                               ?? entry.Attributes["sAMAccountName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
+                               ?? entry.Attributes["mail"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
+                               ?? dn;
+                    result.Add((dn, name));
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetUsers(search={Search}) failed (SearchBase={SearchBase})", search, _settings.SearchBase);
+                return new List<(string, string)>();
+            }
+        });
+    }
+
+    public async Task<List<(string Dn, string Name)>> GetUsersInGroup(string groupDn)
+    {
+        if (string.IsNullOrWhiteSpace(groupDn)) return new List<(string, string)>();
+
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var conn = CreateConnection();
+
+                // Search for users that are memberOf the provided group DN
+                var usersBase = ResolveContainerDn(_settings.UsersContainer);
+                var userClassFilter = BuildObjectClassFilter(_settings.UsersObjectClasses);
+                var filter = string.IsNullOrWhiteSpace(userClassFilter)
+                    ? $"(&(memberOf={EscapeFilter(groupDn)})(objectClass=user))"
+                    : $"(&{userClassFilter}(memberOf={EscapeFilter(groupDn)}))";
+
+                var searchReq = new SearchRequest(usersBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "displayName", "sAMAccountName", "mail" });
+                var resp = (SearchResponse)conn.SendRequest(searchReq);
+
+                var result = new List<(string, string)>();
+                foreach (SearchResultEntry entry in resp.Entries)
+                {
+                    var dn = entry.DistinguishedName;
+                    var name = entry.Attributes["displayName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
+                               ?? entry.Attributes["sAMAccountName"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
+                               ?? entry.Attributes["mail"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault()
+                               ?? dn;
+                    result.Add((dn, name));
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetUsersInGroup(groupDn={GroupDn}) failed (SearchBase={SearchBase})", groupDn, _settings.SearchBase);
+                return new List<(string, string)>();
+            }
+        });
+    }
+
+    public async Task<List<(string Dn, string Name)>> GetGroupsForUser(string userDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn)) return new List<(string, string)>();
+
+        return await Task.Run(() =>
+        {
+            try
+            {
+                using var conn = CreateConnection();
+
+                // Search for groups where member attribute contains the user DN
+                var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
+                var groupClassFilter = BuildObjectClassFilter(_settings.GroupsObjectClasses);
+                var filter = string.IsNullOrWhiteSpace(groupClassFilter)
+                    ? $"(&(member={EscapeFilter(userDn)})(objectClass=group))"
+                    : $"(&{groupClassFilter}(member={EscapeFilter(userDn)}))";
+
+                var searchReq = new SearchRequest(groupsBase, filter, SearchScope.Subtree, new[] { "distinguishedName", "cn" });
+                var resp = (SearchResponse)conn.SendRequest(searchReq);
+
+                var result = new List<(string, string)>();
+                foreach (SearchResultEntry entry in resp.Entries)
+                {
+                    var dn = entry.DistinguishedName;
+                    var cn = entry.Attributes["cn"]?.GetValues(typeof(string))?.Cast<string>().FirstOrDefault() ?? dn;
+                    result.Add((dn, cn));
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetGroupsForUser(userDn={UserDn}) failed (SearchBase={SearchBase})", userDn, _settings.SearchBase);
+                return new List<(string, string)>();
+            }
         });
     }
 
@@ -231,5 +492,25 @@ public class ADService
     private static string EscapeFilter(string input)
     {
         return input.Replace("\\", "\\5c").Replace("*", "\\2a").Replace("(", "\\28").Replace(")", "\\29").Replace("\0", "\\00");
+    }
+
+    private static string? DomainFromSearchBase(string searchBase)
+    {
+        if (string.IsNullOrWhiteSpace(searchBase)) return null;
+        // parse DC=example,DC=com -> example.com
+        try
+        {
+            var parts = searchBase.Split(',')
+                .Select(p => p.Trim())
+                .Where(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase))
+                .Select(p => p.Substring(3))
+                .ToArray();
+            if (parts.Length == 0) return null;
+            return string.Join('.', parts);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

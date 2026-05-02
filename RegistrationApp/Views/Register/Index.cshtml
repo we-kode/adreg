@@ -1,12 +1,114 @@
 ﻿@using Shared.Models
 @model RegistrationLink
 
-<h2>Register</h2>
+@{
+    // Use the shared layout so site.css and scripts are applied
+    Layout = "_Layout";
+}
 
-<form method="post">
-    <input name="firstname" placeholder="FirstName" />
-    <input name="lastname" placeholder="LastName" />
-    <input name="email" placeholder="Email" />
-    <input type="password" name="password" placeholder="Password" />
-    <button>Submit</button>
-</form>
+<h2 class="mt-3">Registrieren</h2>
+
+<div class="card mt-3 shadow-sm">
+    <div class="card-body">
+        <div id="message"></div>
+
+        <form method="post" id="regForm">
+            <div class="mb-3">
+                <label for="firstname" class="form-label">Vorname</label>
+                <input id="firstname" name="firstname" class="form-control" />
+            </div>
+            <div class="mb-3">
+                <label for="lastname" class="form-label">Nachname</label>
+                <input id="lastname" name="lastname" class="form-control" />
+            </div>
+            <div class="mb-3">
+                <label for="username" class="form-label">Benutzername</label>
+                <input id="username" name="username" class="form-control" readonly />
+            </div>
+            <div class="mb-3">
+                <label for="password" class="form-label">Passwort</label>
+                <input id="password" type="password" name="password" class="form-control" />
+            </div>
+            <div class="mb-3">
+                <label for="confirm" class="form-label">Passwort bestätigen</label>
+                <input id="confirm" type="password" name="confirm" class="form-control" />
+            </div>
+
+            <div id="validation" class="text-danger mb-3"></div>
+
+            <button id="submitBtn" class="btn btn-primary" disabled>Absenden</button>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        const first = document.getElementById('firstname');
+        const last = document.getElementById('lastname');
+        const user = document.getElementById('username');
+        const pwd = document.getElementById('password');
+        const conf = document.getElementById('confirm');
+        const submitBtn = document.getElementById('submitBtn');
+        const validation = document.getElementById('validation');
+        const messageDiv = document.getElementById('message');
+        const form = document.getElementById('regForm');
+
+        let timer = 0;
+
+        function debounce(fn, ms) {
+            return function () {
+                clearTimeout(timer);
+                timer = setTimeout(() => fn.apply(this, arguments), ms);
+            }
+        }
+
+        async function updateUsername() {
+            const f = first.value.trim();
+            const l = last.value.trim();
+            if (!f || !l) { user.value = ''; return; }
+            try {
+                const resp = await fetch(`/Register/CheckUsername?firstname=${encodeURIComponent(f)}&lastname=${encodeURIComponent(l)}`);
+                const jd = await resp.json();
+                user.value = jd.username || '';
+            } catch (e) { console.warn(e); }
+        }
+
+        const debouncedUpdate = debounce(updateUsername, 300);
+
+        first.addEventListener('input', debouncedUpdate);
+        last.addEventListener('input', debouncedUpdate);
+        pwd.addEventListener('input', validateForm);
+        conf.addEventListener('input', validateForm);
+
+        function validateForm() {
+            const f = first.value.trim();
+            const l = last.value.trim();
+            const p = pwd.value;
+            const c = conf.value;
+
+            let msgs = [];
+            if (!f) msgs.push('Vorname erforderlich');
+            if (!l) msgs.push('Nachname erforderlich');
+            if (!p) msgs.push('Passwort erforderlich');
+            if (p && p.length < 8) msgs.push('Passwort muss mindestens 8 Zeichen haben');
+            if (p && !/[A-Z]/.test(p)) msgs.push('Passwort benötigt einen Großbuchstaben');
+            if (p && !/[a-z]/.test(p)) msgs.push('Passwort benötigt einen Kleinbuchstaben');
+            if (p && !/[0-9]/.test(p)) msgs.push('Passwort benötigt eine Zahl');
+            if (p && !/[^a-zA-Z0-9]/.test(p)) msgs.push('Passwort benötigt ein Sonderzeichen');
+            if (p && c && p !== c) msgs.push('Passwörter stimmen nicht überein');
+
+            validation.innerText = msgs.join('; ');
+            submitBtn.disabled = msgs.length > 0;
+        }
+
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            const uname = user.value || '(kein Benutzername)';
+            messageDiv.innerHTML = `<div class="alert alert-success" role="alert">Das Formular wurde abgesendet. Benutzername: <strong>${uname}</strong></div>`;
+            setTimeout(() => form.submit(), 1300);
+        });
+
+        // initial validation
+        validateForm();
+    </script>
+}

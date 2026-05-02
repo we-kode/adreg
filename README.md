@@ -26,8 +26,55 @@ Download the `compose.yml` and the `.env` file, configure the variables inside t
 ```
 curl -O https://raw.githubusercontent.com/we-kode/adreg/master/compose.yml
 curl -O https://raw.githubusercontent.com/we-kode/adreg/master/.env
+
 ```
 
+## LDAP / AD: zusätzliche Optionen und Hinweise
+
+Dieses Projekt unterstützt verschiedene LDAP-Server (Windows AD, OpenLDAP, etc.). Um unterschiedliche DN-Strukturen und Objektklassen zu unterstützen wurden zusätzliche Einstellungen eingeführt:
+
+- `AD__GroupsContainer` — optional: OU/Container für Gruppen. Kann ein relativer OU-Wert (z.B. `ou=groups`) oder eine vollständige DN (z.B. `ou=groups,dc=example,dc=org`) sein. Wird anstelle von `SearchBase` für Gruppensuchen und -erstellungen verwendet.
+- `AD__UsersObjectClasses` — optional: kommaseparierte Liste von Objektklassen, die als Benutzer gelten (z. B. `user,inetOrgPerson`).
+- `AD__GroupsObjectClasses` — optional: kommaseparierte Liste von Objektklassen für Gruppen (z. B. `group,groupOfNames`).
+
+Wichtiges Verhalten:
+- Wenn ein Container-Eintrag (`UsersContainer` / `GroupsContainer`) eine `=` und ein `,` enthält, wird er als volle DN behandelt. Andernfalls wird er relativ zum `SearchBase` angehängt.
+- Bei Gruppenzuweisungen akzeptiert das System entweder die komplette Gruppen-DN oder nur den `cn`-Wert. Fehlt ein `=`, wird nach `cn` gesucht (im konfigurierten `GroupsContainer`).
+
+Beispiele für `.env` (dein lokaler LDAP-Server):
+
+```
+# einfacher ldap (z.B. OpenLDAP / Testserver)
+AD__LdapUrl=ldap://ldap:389
+AD__BindDn=cn=admin,dc=example,dc=org
+AD__BindPassword=admin
+AD__SearchBase=dc=example,dc=org
+AD__UsersContainer=ou=users,dc=example,dc=org
+AD__GroupsContainer=ou=groups,dc=example,dc=org
+AD__UsersObjectClasses=inetOrgPerson,user
+AD__GroupsObjectClasses=groupOfNames,group
+AD__AllowInvalidCertificate=false
+```
+
+Beispiel für Windows AD mit LDAPS (passwort-Operationen funktionieren zuverlässig):
+
+```
+AD__LdapUrl=ldaps://dc01.example.local:636
+AD__BindDn=CN=adregsvc,OU=Service Accounts,DC=example,DC=local
+AD__BindPassword=VerySecretPassword123!
+AD__SearchBase=DC=example,DC=local
+AD__UsersContainer=OU=Users
+AD__GroupsContainer=OU=Groups
+AD__UsersObjectClasses=user
+AD__GroupsObjectClasses=group
+AD__AllowInvalidCertificate=false
+```
+
+Hinweis zu Passwörtern:
+- Bei Microsoft Active Directory ist das Setzen von `unicodePwd` in der Regel nur über LDAPS möglich. Ohne LDAPS wird das Setzen des Passworts fehlschlagen und nur geloggt — der Account bleibt angelegt, aber ohne Passwort.
+- Bei anderen LDAP-Implementierungen (z. B. OpenLDAP) können Passwort-Operationen unterschiedlich sein (StartTLS, spezielle Attribute oder Controls). Prüfe das Schema und die Serverdokumentation.
+
+Wenn weitere Beispiele oder eine `example.env`-Datei gewünscht sind, kann diese ergänzt werden.
 ### Step 1: Configure Active Directory (LDAP / AD)
 
 This project integrates directly with Active Directory / LDAP. The Admin app will use the configured LDAP connection to create users and add them to groups.
