@@ -19,9 +19,14 @@ services:
       - "${PORT_ADMIN}:8080"
     env_file:
       - .env
+    #environment:
+    #  - LDAPTLS_CACERT=/certs/ad-ca.crt
+    #  - LDAPTLS_REQCERT=demand
     volumes:
       - ./data:/data
       - /etc/localtime:/etc/localtime:ro
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+      # - ./certs/ad-ca.crt:/certs/ad-ca.crt:ro
     # no external IAM dependency; uses Active Directory instead
     networks:
       - internal
@@ -45,9 +50,14 @@ services:
       - "${PORT_REGISTER}:8080"
     env_file:
       - .env
+    #environment:
+    #  - LDAPTLS_CACERT=/certs/ad-ca.crt
+    #  - LDAPTLS_REQCERT=demand
     volumes:
       - ./data:/data
       - /etc/localtime:/etc/localtime:ro
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+      # - ./certs/ad-ca.crt:/certs/ad-ca.crt:ro
     # no external IAM dependency; uses Active Directory instead
     networks:
       - internal

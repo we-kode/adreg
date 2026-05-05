@@ -55,6 +55,19 @@ public class MailService(IOptions<SmtpSettings> settings)
         await SendAsync(email, "Your Registration Link", html);
     }
 
+    public async Task SendPasswordResetLink(string email, string link, DateTime validUntilUtc)
+    {
+        var html = $@"
+        <h2>Password Reset</h2>
+        <p>An administrator has initiated a password reset for your account.</p>
+        <p>Please click the link below to set a new password. The link is valid until
+        <strong>{validUntilUtc:yyyy-MM-dd HH:mm} UTC</strong> and can only be used once.</p>
+        <a href='{link}'>{link}</a>
+    ";
+
+        await SendAsync(email, "Password Reset Link", html);
+    }
+
     private string StripHtml(string html)
     {
         return System.Text.RegularExpressions.Regex.Replace(html, "<.*?>", string.Empty);

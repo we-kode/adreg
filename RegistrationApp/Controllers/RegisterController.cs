@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Shared.Data;
 using Shared.Models;
+using Shared.Services;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -10,10 +12,14 @@ namespace RegistrationApp.Controllers;
 public class RegisterController : Controller
 {
     private readonly AppDbContext _db;
+    private readonly ADService _adService;
+    private readonly ILogger<RegisterController> _logger;
 
-    public RegisterController(AppDbContext db)
+    public RegisterController(AppDbContext db, ADService adService, ILogger<RegisterController> logger)
     {
         _db = db;
+        _adService = adService;
+        _logger = logger;
     }
 
     [HttpGet("{id}")]
@@ -70,6 +76,57 @@ public class RegisterController : Controller
     {
         return View();
     }
+
+    [HttpGet("ResetPassword/{id}")]
+    public async Task<IActionResult> ResetPassword(Guid id)
+    {
+        var link = await _db.PasswordResetLinks.FindAsync(id);
+        if (link == null) return Content("Invalid link");
+        if (link.IsUsed) return Content("Link already used");
+        if (link.ValidUntil < DateTime.UtcNow) return Content("Link expired");
+
+        return View(link);
+    }
+
+    [HttpPost("ResetPassword/{id}")]
+    public async Task<IActionResult> ResetPasswordSubmit(Guid id, string password, string confirm)
+    {
+        var link = await _db.PasswordResetLinks.FindAsync(id);
+        if (link == null) return Content("Invalid link");
+        if (link.IsUsed) return Content("Link already used");
+        if (link.ValidUntil < DateTime.UtcNow) return Content("Link expired");
+
+        if (password != confirm)
+        {
+            ViewBag.Error = "Passwörter stimmen nicht überein";
+            return View("ResetPassword", link);
+        }
+
+        if (!ValidatePassword(password, out var pwdMsg))
+        {
+            ViewBag.Error = pwdMsg;
+            return View("ResetPassword", link);
+        }
+
+        try
+        {
+            await _adService.SetUserPassword(link.UserDn, password);
+        }
+        catch (DirectoryServiceException ex)
+        {
+            _logger.LogError(ex, "Failed to update password for {Dn}", link.UserDn);
+            ViewBag.Error = $"Passwort konnte nicht aktualisiert werden: {ex.Message}";
+            return View("ResetPassword", link);
+        }
+
+        link.IsUsed = true;
+        await _db.SaveChangesAsync();
+
+        return RedirectToAction("ResetPasswordDone");
+    }
+
+    [HttpGet("ResetPasswordDone")]
+    public IActionResult ResetPasswordDone() => View();
 
     [HttpGet("CheckUsername")]
     public IActionResult CheckUsername(string firstname, string lastname)

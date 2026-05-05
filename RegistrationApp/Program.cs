@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Shared.Data;
+using Shared.Models;
+using Shared.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddLogging();
@@ -8,6 +10,10 @@ builder.Services.AddLogging();
 builder.Services.AddControllersWithViews();
 
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite("Data Source=/data/adreg.db"));
+
+// Active Directory client (used for password reset).
+builder.Services.Configure<ADSettings>(builder.Configuration.GetSection("AD"));
+builder.Services.AddSingleton<ADService>();
 
 var app = builder.Build();
 

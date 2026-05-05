@@ -34,6 +34,8 @@ curl -O https://raw.githubusercontent.com/we-kode/adreg/master/.env
 
 This project integrates with Active Directory or with a standard LDAP server (e.g. OpenLDAP, 389 Directory Server). The Admin app uses the configured connection to create users, list groups and add new accounts to selected groups.
 
+If you are using Active Directory with LDAPS, see [LDAPS troubleshooting](LDAPS_AD_Troubleshoot.md) for detailed troubleshooting steps and recommended Docker configuration.
+
 Active Directory is **prioritized**: if `AD__ServerType` is omitted or set to an unknown value, the app behaves as if `ActiveDirectory` was selected. Only set `AD__ServerType=Ldap` to switch to a generic LDAP profile.
 
 | Setting | Description |

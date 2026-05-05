@@ -7,6 +7,7 @@ public class AppDbContext : DbContext
     public DbSet<RegistrationLink> Links { get; set; }
     public DbSet<PendingRegistration> PendingRegistrations { get; set; }
     public DbSet<AdminUser> AdminUsers { get; set; }
+    public DbSet<PasswordResetLink> PasswordResetLinks { get; set; }
 
     public AppDbContext(DbContextOptions<AppDbContext> options)
         : base(options) { }

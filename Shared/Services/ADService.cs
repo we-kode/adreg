@@ -33,12 +33,12 @@ public class ADService
     // ---------- Public surface ----------
 
     // Returns true if the group was created, false if it already existed.
-    public Task<bool> CreateGroup(string groupName)
+    public Task<bool> CreateGroup(string groupName, string? description = null)
     {
         if (string.IsNullOrWhiteSpace(groupName))
             throw new ArgumentException("Group name must be provided", nameof(groupName));
 
-        return Execute(conn => CreateGroupCore(conn, groupName), $"CreateGroup({groupName})");
+        return Execute(conn => CreateGroupCore(conn, groupName, description), $"CreateGroup({groupName})");
     }
 
     public Task CreateUser(string firstName, string lastName, string username, string password, IEnumerable<string>? groups)
@@ -70,6 +70,47 @@ public class ADService
     {
         if (string.IsNullOrWhiteSpace(userDn)) return Task.FromResult(new List<DirectoryItem>());
         return Execute(conn => GroupsForUser(conn, userDn), $"GetGroupsForUser({userDn})");
+    }
+
+    public Task<DirectoryUser?> GetUserByDn(string userDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn)) return Task.FromResult<DirectoryUser?>(null);
+        return Execute(conn => ReadUser(conn, userDn), $"GetUserByDn({userDn})");
+    }
+
+    public Task SetUserPassword(string userDn, string password)
+    {
+        if (string.IsNullOrWhiteSpace(userDn)) throw new ArgumentException("User DN required", nameof(userDn));
+        if (string.IsNullOrEmpty(password)) throw new ArgumentException("Password required", nameof(password));
+
+        return Execute<int>(conn =>
+        {
+            if (_profile.RequiresQuotedUtf16Password)
+                ReplaceAttribute(conn, userDn, _profile.PasswordAttribute, EncodeAdPassword(password));
+            else
+                ReplaceAttribute(conn, userDn, _profile.PasswordAttribute, password);
+            return 0;
+        }, $"SetUserPassword({userDn})");
+    }
+
+    private DirectoryUser? ReadUser(LdapConnection conn, string userDn)
+    {
+        try
+        {
+            var resp = (SearchResponse)conn.SendRequest(
+                new SearchRequest(userDn, "(objectClass=*)", SearchScope.Base, _profile.UserSearchAttributes));
+            var entry = resp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
+            if (entry == null) return null;
+            return new DirectoryUser(
+                entry.DistinguishedName,
+                FormatUserName(entry),
+                GetAttribute(entry, _profile.MailAttribute),
+                GetAttribute(entry, _profile.UsernameAttribute));
+        }
+        catch (DirectoryOperationException)
+        {
+            return null;
+        }
     }
 
     // ---------- Search ----------
@@ -123,7 +164,7 @@ public class ADService
         items.OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
     private static DirectoryItem MapGroup(SearchResultEntry e) =>
-        new(e.DistinguishedName, GetAttribute(e, "cn") ?? e.DistinguishedName);
+        new(e.DistinguishedName, GetAttribute(e, "cn") ?? e.DistinguishedName, GetAttribute(e, "description"));
 
     private DirectoryItem MapUser(SearchResultEntry e) =>
         new(e.DistinguishedName, FormatUserName(e));
@@ -187,7 +228,7 @@ public class ADService
 
     // ---------- Mutation ----------
 
-    private bool CreateGroupCore(LdapConnection conn, string groupName)
+    private bool CreateGroupCore(LdapConnection conn, string groupName, string? description)
     {
         var groupsBase = ResolveContainerDn(_settings.GroupsContainer);
         var existsFilter = WrapClassFilter($"(cn={EscapeFilter(groupName)})", _profile.GroupObjectClasses);
@@ -199,6 +240,9 @@ public class ADService
         var add = new AddRequest(dn);
         add.Attributes.Add(new DirectoryAttribute("objectClass", _profile.GroupObjectClasses));
         add.Attributes.Add(new DirectoryAttribute("cn", groupName));
+
+        if (!string.IsNullOrWhiteSpace(description))
+            add.Attributes.Add(new DirectoryAttribute("description", description));
 
         if (_profile.Type == DirectoryServerType.ActiveDirectory)
         {
@@ -417,17 +461,36 @@ public class ADService
 
     // ---------- DN / filter helpers ----------
 
+    // Resolves a configured container value to a full DN.
+    // Accepts:
+    //   * empty                                              -> SearchBase
+    //   * single relative RDN, e.g. "OU=Users"               -> "OU=Users,<SearchBase>"
+    //   * nested relative RDNs, e.g. "OU=Users,OU=Domain Users" -> "OU=Users,OU=Domain Users,<SearchBase>"
+    //   * full DN containing DC= components                  -> used as-is
+    //   * value that already ends with SearchBase            -> used as-is
     private string ResolveContainerDn(string containerSetting)
     {
-        var baseDn = _settings.SearchBase ?? string.Empty;
+        var baseDn = _settings.SearchBase?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(containerSetting)) return baseDn;
-        if (LooksLikeDn(containerSetting)) return containerSetting;
+
+        var trimmed = containerSetting.Trim().TrimEnd(',');
+
         if (!string.IsNullOrWhiteSpace(baseDn) &&
-            (containerSetting.Equals(baseDn, StringComparison.OrdinalIgnoreCase) ||
-             containerSetting.EndsWith($",{baseDn}", StringComparison.OrdinalIgnoreCase)))
-            return containerSetting;
-        return string.IsNullOrWhiteSpace(baseDn) ? containerSetting : $"{containerSetting},{baseDn}";
+            (trimmed.Equals(baseDn, StringComparison.OrdinalIgnoreCase) ||
+             trimmed.EndsWith($",{baseDn}", StringComparison.OrdinalIgnoreCase)))
+            return trimmed;
+
+        // A value is only an absolute DN when it carries a DC= component (the domain root).
+        // Otherwise it is a relative path — even if it contains nested OU=/CN= segments — and
+        // must be anchored under SearchBase.
+        if (HasDomainComponent(trimmed)) return trimmed;
+
+        return string.IsNullOrWhiteSpace(baseDn) ? trimmed : $"{trimmed},{baseDn}";
     }
+
+    private static bool HasDomainComponent(string dn) =>
+        dn.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+          .Any(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase));
 
     private static string WrapClassFilter(string innerFilter, string[] objectClasses)
     {
@@ -512,7 +575,7 @@ public class ADService
             "distinguishedName", DisplayNameAttribute, FirstNameAttribute, LastNameAttribute, UsernameAttribute, MailAttribute
         };
 
-        public string[] GroupSearchAttributes => new[] { "distinguishedName", "cn", MemberAttribute };
+        public string[] GroupSearchAttributes => new[] { "distinguishedName", "cn", "description", MemberAttribute };
 
         public static DirectoryProfile From(ADSettings settings)
         {

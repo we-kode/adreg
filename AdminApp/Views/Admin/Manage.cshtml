@@ -42,8 +42,44 @@
     <div class="col-md-8">
         <div class="card shadow-sm">
             <div class="card-body">
-                <h5 id="detailTitle">Details</h5>
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h5 id="detailTitle" class="mb-0">Details</h5>
+                    <button id="resetPasswordBtn" type="button" class="btn btn-warning btn-sm d-none">
+                        🔑 Reset Password
+                    </button>
+                </div>
                 <div id="detailsArea">Select a group or user to load related items.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="resetPasswordModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Reset Password</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="resetPasswordError" class="alert alert-danger d-none"></div>
+                <p>
+                    Soll das Passwort für <strong id="resetPasswordUserName"></strong> zurückgesetzt werden?
+                </p>
+                <p class="text-muted small mb-3">
+                    An die unten eingetragene E-Mail-Adresse wird ein Reset-Link verschickt.
+                    Der Link ist 24 Stunden gültig und kann nur einmal verwendet werden.
+                    Die E-Mail-Adresse wird nicht gespeichert.
+                </p>
+                <div class="mb-3">
+                    <label for="resetPasswordEmail" class="form-label">E-Mail-Adresse</label>
+                    <input type="email" id="resetPasswordEmail" class="form-control" required />
+                    <div id="resetPasswordEmailHint" class="form-text"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" id="resetPasswordConfirmBtn" class="btn btn-warning">Reset-Link senden</button>
             </div>
         </div>
     </div>
@@ -58,9 +94,29 @@
         const detailTitle = document.getElementById('detailTitle');
         const detailsArea = document.getElementById('detailsArea');
         const listTitle = document.getElementById('listTitle');
+        const resetPasswordBtn = document.getElementById('resetPasswordBtn');
+        const resetPasswordModalEl = document.getElementById('resetPasswordModal');
+        const resetPasswordModal = new bootstrap.Modal(resetPasswordModalEl);
+        const resetPasswordUserName = document.getElementById('resetPasswordUserName');
+        const resetPasswordEmail = document.getElementById('resetPasswordEmail');
+        const resetPasswordEmailHint = document.getElementById('resetPasswordEmailHint');
+        const resetPasswordError = document.getElementById('resetPasswordError');
+        const resetPasswordConfirmBtn = document.getElementById('resetPasswordConfirmBtn');
+
+        let selectedUser = null;
+
+        function setSelectedUser(user) {
+            selectedUser = user;
+            if (user) {
+                resetPasswordBtn.classList.remove('d-none');
+            } else {
+                resetPasswordBtn.classList.add('d-none');
+            }
+        }
 
         function clearDetails() {
             detailsArea.innerHTML = '';
+            setSelectedUser(null);
         }
 
         async function fetchJson(url) {
@@ -88,21 +144,58 @@
             detailsArea.innerHTML = `<div class="alert alert-danger">${escapeHtml(message)}</div>`;
         }
 
+        function makeUserRow(user, onRowClick) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex justify-content-between align-items-center';
+            li.dataset.dn = user.dn;
+
+            const label = document.createElement('span');
+            label.textContent = user.name;
+            label.style.flex = '1 1 auto';
+            label.style.overflow = 'hidden';
+            label.style.textOverflow = 'ellipsis';
+            if (onRowClick) {
+                label.style.cursor = 'pointer';
+                label.addEventListener('click', () => onRowClick(user.dn, user.name));
+            }
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-warning btn-sm ms-2';
+            btn.textContent = '🔑 Reset Password';
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openResetPasswordDialog(user.dn, user.name);
+            });
+
+            li.appendChild(label);
+            li.appendChild(btn);
+            return li;
+        }
+
         function renderList(items, type) {
             itemList.innerHTML = '';
             listTitle.textContent = type === 'groups' ? 'Groups' : 'Users';
             items.forEach(i => {
+                if (type === 'users') {
+                    itemList.appendChild(makeUserRow(i, (dn, name) => onSelectItem(dn, name, 'users')));
+                    return;
+                }
+
                 const li = document.createElement('li');
                 li.className = 'list-group-item list-group-item-action';
                 li.textContent = i.name;
                 li.dataset.dn = i.dn;
+                if (i.description) {
+                    li.title = i.description;
+                }
                 li.style.cursor = 'pointer';
                 li.addEventListener('click', () => onSelectItem(i.dn, i.name, type));
                 itemList.appendChild(li);
             });
         }
 
-        function renderRelatedList(items, onClick, emptyMessage) {
+        function renderRelatedList(items, onClick, emptyMessage, isUsers) {
             if (!items.length) {
                 detailsArea.innerHTML = `<div class="alert alert-info">${escapeHtml(emptyMessage)}</div>`;
                 return;
@@ -110,6 +203,11 @@
             const ul = document.createElement('ul');
             ul.className = 'list-group';
             items.forEach(i => {
+                if (isUsers) {
+                    ul.appendChild(makeUserRow(i, onClick));
+                    return;
+                }
+
                 const li = document.createElement('li');
                 li.className = onClick ? 'list-group-item list-group-item-action' : 'list-group-item';
                 li.textContent = i.name;
@@ -124,14 +222,14 @@
             detailsArea.appendChild(ul);
         }
 
-        async function loadAndRender(url, onClick, loadingText, emptyMessage, errorPrefix) {
+        async function loadAndRender(url, onClick, loadingText, emptyMessage, errorPrefix, isUsers) {
             detailsArea.innerHTML = `<div class="text-muted">${escapeHtml(loadingText)}</div>`;
             const result = await fetchJson(url);
             if (result.error) {
                 renderError(`${errorPrefix}: ${result.error}`);
                 return;
             }
-            renderRelatedList(result.data, onClick, emptyMessage);
+            renderRelatedList(result.data, onClick, emptyMessage, isUsers);
         }
 
         async function onSelectItem(dn, name, type) {
@@ -143,30 +241,110 @@
                     onSelectUserFromGroup,
                     'Loading users...',
                     'No users in this group',
-                    'Failed to load users for this group'
+                    'Failed to load users for this group',
+                    true
                 );
             } else {
+                setSelectedUser({ dn, name });
                 detailTitle.textContent = 'Groups of ' + name;
                 await loadAndRender(
                     `/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`,
                     null,
                     'Loading groups...',
                     'User is not a member of any groups',
-                    'Failed to load groups for this user'
+                    'Failed to load groups for this user',
+                    false
                 );
             }
         }
 
         async function onSelectUserFromGroup(dn, name) {
+            setSelectedUser({ dn, name });
             detailTitle.textContent = name + ' — groups';
             await loadAndRender(
                 `/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`,
                 null,
                 'Loading groups...',
                 'No groups for this user',
-                'Failed to load groups for this user'
+                'Failed to load groups for this user',
+                false
             );
         }
+
+        async function openResetPasswordDialog(dn, name) {
+            setSelectedUser({ dn, name });
+            resetPasswordError.classList.add('d-none');
+            resetPasswordError.textContent = '';
+            resetPasswordUserName.textContent = name;
+            resetPasswordEmail.value = '';
+            resetPasswordEmailHint.textContent = 'Lade hinterlegte E-Mail-Adresse...';
+            resetPasswordConfirmBtn.disabled = true;
+            resetPasswordModal.show();
+
+            const result = await fetchJson(`/Admin/GetUserDetails?userDn=${encodeURIComponent(dn)}`);
+            if (result.error) {
+                resetPasswordEmailHint.textContent = '';
+                resetPasswordError.textContent = result.error;
+                resetPasswordError.classList.remove('d-none');
+                resetPasswordConfirmBtn.disabled = false;
+                return;
+            }
+
+            const mail = result.data && result.data.mail ? result.data.mail : '';
+            resetPasswordEmail.value = mail;
+            resetPasswordEmailHint.textContent = mail
+                ? 'Hinterlegte E-Mail-Adresse aus dem Verzeichnis. Du kannst sie hier anpassen.'
+                : 'Es ist keine E-Mail-Adresse hinterlegt – bitte trage eine ein.';
+            resetPasswordConfirmBtn.disabled = false;
+        }
+
+        resetPasswordBtn.addEventListener('click', () => {
+            if (!selectedUser) return;
+            openResetPasswordDialog(selectedUser.dn, selectedUser.name);
+        });
+
+        resetPasswordConfirmBtn.addEventListener('click', async () => {
+            if (!selectedUser) return;
+            const email = resetPasswordEmail.value.trim();
+            resetPasswordError.classList.add('d-none');
+            resetPasswordError.textContent = '';
+
+            if (!email) {
+                resetPasswordError.textContent = 'Bitte eine E-Mail-Adresse eingeben.';
+                resetPasswordError.classList.remove('d-none');
+                return;
+            }
+
+            resetPasswordConfirmBtn.disabled = true;
+            try {
+                const body = new URLSearchParams();
+                body.append('userDn', selectedUser.dn);
+                body.append('email', email);
+
+                const res = await fetch('/Admin/SendPasswordReset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString()
+                });
+                const payload = await res.json().catch(() => null);
+
+                if (!res.ok) {
+                    const msg = (payload && payload.error) ? payload.error : `Request failed: ${res.status}`;
+                    resetPasswordError.textContent = msg;
+                    resetPasswordError.classList.remove('d-none');
+                    return;
+                }
+
+                resetPasswordModal.hide();
+                detailsArea.insertAdjacentHTML('afterbegin',
+                    `<div class="alert alert-success">Reset-Link wurde an ${escapeHtml(email)} gesendet.</div>`);
+            } catch (err) {
+                resetPasswordError.textContent = err.message || 'Netzwerkfehler';
+                resetPasswordError.classList.remove('d-none');
+            } finally {
+                resetPasswordConfirmBtn.disabled = false;
+            }
+        });
 
         loadBtn.addEventListener('click', async () => {
             const view = viewSelect.value;

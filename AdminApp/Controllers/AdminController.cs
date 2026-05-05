@@ -85,7 +85,7 @@ public class AdminController(
     [HttpGet] public IActionResult Manage() => View();
 
     [HttpPost]
-    public async Task<IActionResult> CreateGroup(string name)
+    public async Task<IActionResult> CreateGroup(string name, string? description)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -95,7 +95,7 @@ public class AdminController(
 
         try
         {
-            var created = await adService.CreateGroup(name);
+            var created = await adService.CreateGroup(name, description);
             if (!created)
             {
                 TempData["Error"] = "Group already exists";
@@ -127,6 +127,98 @@ public class AdminController(
     [HttpGet]
     public Task<IActionResult> GetGroupsForUser(string userDn) =>
         DirectoryJson(() => adService.GetGroupsForUser(userDn), "groups for user");
+
+    [HttpGet]
+    public async Task<IActionResult> GetUserDetails(string userDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn))
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            return Json(new { error = "userDn is required" });
+        }
+
+        try
+        {
+            var user = await adService.GetUserByDn(userDn);
+            if (user == null)
+            {
+                Response.StatusCode = StatusCodes.Status404NotFound;
+                return Json(new { error = "User not found" });
+            }
+            return Json(new { dn = user.Dn, name = user.Name, mail = user.Mail, username = user.Username });
+        }
+        catch (DirectoryServiceException ex)
+        {
+            logger.LogError(ex, "Failed to load user details for {Dn}", userDn);
+            Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            return Json(new { error = $"Failed to load user details: {ex.Message}" });
+        }
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> SendPasswordReset(string userDn, string email)
+    {
+        if (string.IsNullOrWhiteSpace(userDn))
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            return Json(new { error = "userDn is required" });
+        }
+        if (string.IsNullOrWhiteSpace(email) || !IsValidEmail(email))
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            return Json(new { error = "A valid email address is required" });
+        }
+
+        try
+        {
+            var user = await adService.GetUserByDn(userDn);
+            if (user == null)
+            {
+                Response.StatusCode = StatusCodes.Status404NotFound;
+                return Json(new { error = "User not found in directory" });
+            }
+
+            var resetHours = config.GetValue<int?>("PasswordResetValidHours") ?? 24;
+            var link = new PasswordResetLink
+            {
+                Id = Guid.NewGuid(),
+                UserDn = user.Dn,
+                Username = user.Username ?? string.Empty,
+                ValidUntil = DateTime.UtcNow.AddHours(resetHours),
+                IsUsed = false
+            };
+
+            db.PasswordResetLinks.Add(link);
+            await db.SaveChangesAsync();
+
+            var baseUrl = config.GetValue<string?>("LinkBaseUrl");
+            await mail.SendPasswordResetLink(email.Trim(), $"{baseUrl}/Register/ResetPassword/{link.Id}", link.ValidUntil);
+
+            return Json(new { ok = true });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send password reset for {Dn}", userDn);
+            Response.StatusCode = StatusCodes.Status500InternalServerError;
+            var message = ex is DirectoryServiceException
+                ? $"Directory error: {ex.Message}"
+                : "Failed to create or send the reset link.";
+            return Json(new { error = message });
+        }
+    }
+
+    private static bool IsValidEmail(string value)
+    {
+        try
+        {
+            var addr = new System.Net.Mail.MailAddress(value);
+            return addr.Address == value.Trim();
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     [HttpPost]
     public async Task<IActionResult> CreateLink(DateTime? validUntil, bool singleUse, string email, List<string>? selectedGroups)
@@ -179,7 +271,7 @@ public class AdminController(
         try
         {
             var items = await fetch();
-            return Json(items.Select(i => new { dn = i.Dn, name = i.Name }));
+            return Json(items.Select(i => new { dn = i.Dn, name = i.Name, description = i.Description }));
         }
         catch (DirectoryServiceException ex)
         {

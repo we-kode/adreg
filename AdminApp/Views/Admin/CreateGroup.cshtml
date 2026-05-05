@@ -14,6 +14,11 @@
                 <input name="name" class="form-control" placeholder="CN for the group" required />
             </div>
 
+            <div class="mb-3">
+                <label>Description <span class="text-muted">(optional)</span></label>
+                <input name="description" class="form-control" placeholder="Description shown on hover in Manage view" />
+            </div>
+
             <button class="btn btn-primary">Create Group</button>
             <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary ms-2">Cancel</a>
 
