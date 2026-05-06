@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Shared.Data;
 using Shared.Models;
@@ -10,6 +11,14 @@ builder.Services.AddLogging();
 builder.Services.AddControllersWithViews();
 
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite("Data Source=/data/adreg.db"));
+
+// Persist DataProtection keys to the mounted /data volume so antiforgery and
+// auth cookies remain valid across container recreates.
+var dpKeysPath = new DirectoryInfo("/data/dp_admin");
+dpKeysPath.Create();
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(dpKeysPath)
+    .SetApplicationName("adregadmin");
 
 // Add Active Directory client
 builder.Services.Configure<ADSettings>(builder.Configuration.GetSection("AD"));

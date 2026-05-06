@@ -29,7 +29,7 @@ public class MailService(IOptions<SmtpSettings> settings)
         using var client = new SmtpClient();
 
         var secureOption = _settings.UseSsl
-            ? SecureSocketOptions.StartTlsWhenAvailable
+            ? (_settings.Port == 587 ? SecureSocketOptions.StartTls : SecureSocketOptions.SslOnConnect)
             : SecureSocketOptions.None;
 
         await client.ConnectAsync(_settings.Host, _settings.Port, secureOption);

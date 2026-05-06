@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Shared.Data;
 using Shared.Models;
@@ -10,6 +11,14 @@ builder.Services.AddLogging();
 builder.Services.AddControllersWithViews();
 
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite("Data Source=/data/adreg.db"));
+
+// Persist DataProtection keys to the mounted /data volume so antiforgery
+// tokens remain valid across container recreates.
+var dpKeysPath = new DirectoryInfo("/data/dp");
+dpKeysPath.Create();
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(dpKeysPath)
+    .SetApplicationName("adreg");
 
 // Active Directory client (used for password reset).
 builder.Services.Configure<ADSettings>(builder.Configuration.GetSection("AD"));
