@@ -10,4 +10,7 @@ public class RegistrationLink
     public bool IsSingleUse { get; set; }
     public bool IsUsed { get; set; }
     public string GroupsJson { get; set; } = "[]";
+
+    [EmailAddress]
+    public required string Email { get; set; }
 }

@@ -41,7 +41,7 @@ public class ADService
         return Execute(conn => CreateGroupCore(conn, groupName, description), $"CreateGroup({groupName})");
     }
 
-    public Task CreateUser(string firstName, string lastName, string username, string password, IEnumerable<string>? groups)
+    public Task CreateUser(string firstName, string lastName, string username, string password, IEnumerable<string>? groups, string email)
     {
         if (string.IsNullOrWhiteSpace(firstName)) throw new ArgumentException("First name required", nameof(firstName));
         if (string.IsNullOrWhiteSpace(lastName)) throw new ArgumentException("Last name required", nameof(lastName));
@@ -49,7 +49,7 @@ public class ADService
 
         return Execute<int>(conn =>
         {
-            CreateUserCore(conn, firstName, lastName, username, password, groups);
+            CreateUserCore(conn, firstName, lastName, username, password, groups, email);
             return 0;
         }, $"CreateUser({username})");
     }
@@ -258,14 +258,14 @@ public class ADService
         return true;
     }
 
-    private void CreateUserCore(LdapConnection conn, string firstName, string lastName, string username, string password, IEnumerable<string>? groups)
+    private void CreateUserCore(LdapConnection conn, string firstName, string lastName, string username, string password, IEnumerable<string>? groups, string email)
     {
         var usersContainerDn = ResolveContainerDn(_settings.UsersContainer);
         var groupsContainerDn = ResolveContainerDn(_settings.GroupsContainer);
 
         var displayName = $"{firstName} {lastName}";
         var userDn = $"CN={EscapeRdn(displayName)},{usersContainerDn}";
-        var mail = ResolveMailAttribute(username);
+        var mail = ResolveMailAttribute(email);
 
         conn.SendRequest(BuildAddUserRequest(userDn, displayName, firstName, lastName, username, mail));
         TrySetPasswordAndEnable(conn, userDn, password);

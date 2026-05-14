@@ -159,17 +159,7 @@
                 label.addEventListener('click', () => onRowClick(user.dn, user.name));
             }
 
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn btn-warning btn-sm ms-2';
-            btn.textContent = '🔑 Reset Password';
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                openResetPasswordDialog(user.dn, user.name);
-            });
-
             li.appendChild(label);
-            li.appendChild(btn);
             return li;
         }
 

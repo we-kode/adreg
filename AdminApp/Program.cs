@@ -1,5 +1,7 @@
+using AdminApp.Jobs;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Quartz;
 using Shared.Data;
 using Shared.Models;
 using Shared.Services;
@@ -42,6 +44,21 @@ builder.Services.AddAuthentication("Cookies")
     });
 
 builder.Services.AddAuthorization();
+
+// Quartz-Dienste hinzufügen
+builder.Services.AddQuartz(q =>
+{
+    var jobKey = new JobKey("DailyCleanupJob");
+    q.AddJob<CleanupJob>(opts => opts.WithIdentity(jobKey));
+    q.AddTrigger(opts => opts
+        .ForJob(jobKey)
+        .WithIdentity("DailyCleanupTrigger")
+        .WithSimpleSchedule(x => x
+            .WithIntervalInHours(24)
+            .RepeatForever()));
+});
+
+builder.Services.AddQuartzHostedService(q => q.WaitForJobsToComplete = true);
 
 var app = builder.Build();
 

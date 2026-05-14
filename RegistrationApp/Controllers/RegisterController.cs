@@ -61,7 +61,8 @@ public class RegisterController : Controller
             Username = username,
             PasswordBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(password)),
             GroupsJson = link.GroupsJson,
-            LinkId = link.Id
+            LinkId = link.Id,
+            Email = link.Email
         });
 
         link.IsUsed = true;

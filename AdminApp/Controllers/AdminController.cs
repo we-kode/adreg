@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 using Shared.Data;
 using Shared.Models;
 using Shared.Services;
@@ -44,8 +43,9 @@ public class AdminController(
         {
             var password = DecodePassword(req.PasswordBase64);
             var groups = JsonSerializer.Deserialize<List<string>>(req.GroupsJson) ?? new List<string>();
+            var email = req.Email;
 
-            await adService.CreateUser(req.FirstName, req.LastName, req.Username, password, groups);
+            await adService.CreateUser(req.FirstName, req.LastName, req.Username, password, groups, email);
 
             db.PendingRegistrations.Remove(req);
             await db.SaveChangesAsync();
@@ -231,7 +231,8 @@ public class AdminController(
                 ValidUntil = validUntil,
                 IsSingleUse = singleUse,
                 IsUsed = false,
-                GroupsJson = JsonSerializer.Serialize(selectedGroups ?? new List<string>())
+                GroupsJson = JsonSerializer.Serialize(selectedGroups ?? []),
+                Email = email.Trim()
             };
 
             db.Links.Add(link);

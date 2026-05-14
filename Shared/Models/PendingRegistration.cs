@@ -14,5 +14,10 @@ public class PendingRegistration
     public required string PasswordBase64 { get; set; }
 
     public string GroupsJson { get; set; } = "[]";
+  
+    // Email address that was used to send the registration link and
+    // will be stored as the new user's email when the account is created.
+    [EmailAddress]
+    public required string Email { get; set; }
     public required Guid LinkId { get; set; }
 }
