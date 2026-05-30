@@ -1,5 +1,8 @@
+using AdminApp.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Shared.Data;
 using Shared.Models;
 using Shared.Services;
@@ -12,11 +15,13 @@ namespace AdminApp.Controllers;
 public class AdminController(
     AppDbContext db,
     MailService mail,
+    MailTemplateService mailTemplates,
     ADService adService,
     IConfiguration config,
+    IOptions<SmtpSettings> smtpOptions,
     ILogger<AdminController> logger) : Controller
 {
-    public IActionResult Index()
+    public async Task<IActionResult> Index()
     {
         var list = db.PendingRegistrations
             .OrderByDescending(x => x.Id)
@@ -26,15 +31,23 @@ public class AdminController(
                 FirstName = p.FirstName,
                 LastName = p.LastName,
                 Username = p.Username,
+                Email = p.Email,
                 GroupsJson = p.GroupsJson
             })
             .ToList();
+
+        // For the per-row "approve with template" dropdown.
+        var approvedTemplates = await mailTemplates.ListAsync(MailKeys.RegistrationApprovedUser);
+        ViewBag.ApprovedTemplates = approvedTemplates;
+        ViewBag.DefaultApprovedTemplateId = approvedTemplates
+            .FirstOrDefault(t => t.IsDefault)?.Id
+            ?? approvedTemplates.FirstOrDefault()?.Id;
 
         return View(list);
     }
 
     [HttpPost]
-    public async Task<IActionResult> Approve(int id)
+    public async Task<IActionResult> Approve(int id, int? templateId)
     {
         var req = await db.PendingRegistrations.FindAsync(id);
         if (req == null) return RedirectToAction("Index");
@@ -44,11 +57,21 @@ public class AdminController(
             var password = DecodePassword(req.PasswordBase64);
             var groups = JsonSerializer.Deserialize<List<string>>(req.GroupsJson) ?? new List<string>();
             var email = req.Email;
+            var firstName = req.FirstName;
+            var lastName = req.LastName;
+            var username = req.Username;
 
             await adService.CreateUser(req.FirstName, req.LastName, req.Username, password, groups, email);
 
             db.PendingRegistrations.Remove(req);
             await db.SaveChangesAsync();
+
+            var groupNames = groups.Select(ExtractCn)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToList();
+            await TrySend(() => mail.SendRegistrationApprovedToUser(
+                    email, firstName, lastName, username, groupNames, templateId),
+                $"approval notice to {email}");
 
             TempData["Success"] = "User approved";
         }
@@ -66,8 +89,16 @@ public class AdminController(
         var req = await db.PendingRegistrations.FindAsync(id);
         if (req != null)
         {
+            var email = req.Email;
+            var firstName = req.FirstName;
+            var lastName = req.LastName;
+
             db.PendingRegistrations.Remove(req);
             await db.SaveChangesAsync();
+
+            await TrySend(() => mail.SendRegistrationRejectedToUser(email, firstName, lastName),
+                $"rejection notice to {email}");
+
             TempData["Success"] = "User rejected";
         }
         return RedirectToAction("Index");
@@ -83,6 +114,227 @@ public class AdminController(
     [HttpGet] public IActionResult CreateGroup() => View();
 
     [HttpGet] public IActionResult Manage() => View();
+
+    [HttpGet]
+    public async Task<IActionResult> ManageMails()
+    {
+        var stored = await db.MailSettings.AsNoTracking().ToDictionaryAsync(s => s.Key, s => s);
+        var defaultAdminRecipient = smtpOptions.Value.From ?? string.Empty;
+
+        var rows = MailKeys.All.Select(k =>
+        {
+            stored.TryGetValue(k.Id, out var s);
+            return new MailSettingRow
+            {
+                Key = k.Id,
+                Audience = k.Audience,
+                DisplayName = k.DisplayName,
+                Description = k.Description,
+                Enabled = s?.Enabled ?? true,
+                Recipient = s?.Recipient,
+                DefaultRecipientHint = k.Audience == MailAudience.User
+                    ? "(Adresse des betroffenen Nutzers)"
+                    : string.IsNullOrWhiteSpace(defaultAdminRecipient)
+                        ? "(SMTP From-Adresse — derzeit nicht konfiguriert)"
+                        : defaultAdminRecipient
+            };
+        }).ToList();
+
+        return View(rows);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> ManageMails(List<MailSettingRow> rows)
+    {
+        rows ??= new List<MailSettingRow>();
+
+        foreach (var row in rows)
+        {
+            var meta = MailKeys.Find(row.Key);
+            if (meta == null) continue;
+
+            var entity = await db.MailSettings.FindAsync(row.Key);
+            if (entity == null)
+            {
+                entity = new MailSetting { Key = row.Key };
+                db.MailSettings.Add(entity);
+            }
+
+            entity.Enabled = row.Enabled;
+
+            // Only admin-targeted mails support a recipient override.
+            entity.Recipient = meta.Audience == MailAudience.Admin
+                ? (string.IsNullOrWhiteSpace(row.Recipient) ? null : row.Recipient.Trim())
+                : null;
+        }
+
+        await db.SaveChangesAsync();
+        TempData["Success"] = "Mail-Einstellungen gespeichert";
+        return RedirectToAction("ManageMails");
+    }
+
+    // ---------- Mail templates ----------
+
+    [HttpGet]
+    public async Task<IActionResult> ManageTemplates()
+    {
+        var counts = await db.MailTemplates
+            .GroupBy(t => t.MailKey)
+            .Select(g => new
+            {
+                Key = g.Key,
+                Count = g.Count(),
+                DefaultName = g.Where(t => t.IsDefault).Select(t => t.Name).FirstOrDefault(),
+            })
+            .ToListAsync();
+
+        var byKey = counts.ToDictionary(c => c.Key);
+
+        var rows = MailKeys.All.Select(k =>
+        {
+            byKey.TryGetValue(k.Id, out var info);
+            return new MailTemplateOverview
+            {
+                Key = k,
+                TemplateCount = info?.Count ?? 0,
+                DefaultTemplateName = info?.DefaultName,
+            };
+        }).ToList();
+
+        return View(rows);
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> Templates(string key)
+    {
+        var meta = MailKeys.Find(key);
+        if (meta == null) return RedirectToAction("ManageTemplates");
+
+        var rows = await mailTemplates.ListAsync(key);
+        ViewBag.KeyMeta = meta;
+        return View(rows);
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> EditTemplate(int id)
+    {
+        var template = await mailTemplates.FindAsync(id);
+        if (template == null) return RedirectToAction("ManageTemplates");
+        var meta = MailKeys.Find(template.MailKey);
+
+        var vm = new MailTemplateEditViewModel
+        {
+            Id = template.Id,
+            MailKey = template.MailKey,
+            Name = template.Name,
+            Subject = template.Subject,
+            BodyHtml = template.BodyHtml,
+            KeyMeta = meta,
+            IsBuiltIn = template.IsBuiltIn,
+            IsDefault = template.IsDefault,
+        };
+        return View(vm);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> EditTemplate(MailTemplateEditViewModel model)
+    {
+        var template = await mailTemplates.FindAsync(model.Id);
+        if (template == null) return RedirectToAction("ManageTemplates");
+
+        if (!ModelState.IsValid)
+        {
+            model.KeyMeta = MailKeys.Find(template.MailKey);
+            model.IsBuiltIn = template.IsBuiltIn;
+            model.IsDefault = template.IsDefault;
+            return View(model);
+        }
+
+        await mailTemplates.UpdateAsync(template, model.Name.Trim(), model.Subject.Trim(), model.BodyHtml);
+        TempData["Success"] = "Vorlage gespeichert";
+        return RedirectToAction("Templates", new { key = template.MailKey });
+    }
+
+    [HttpGet]
+    public IActionResult CreateTemplate(string key)
+    {
+        var meta = MailKeys.Find(key);
+        if (meta == null || !meta.AllowsMultiple)
+        {
+            TempData["Error"] = "Diese Vorlage erlaubt keine weiteren Varianten.";
+            return RedirectToAction("ManageTemplates");
+        }
+
+        var seed = MailTemplateDefaults.For(key);
+        var vm = new MailTemplateEditViewModel
+        {
+            Id = 0,
+            MailKey = key,
+            Name = "Neue Vorlage",
+            Subject = seed.Subject,
+            BodyHtml = seed.BodyHtml,
+            KeyMeta = meta,
+            IsBuiltIn = false,
+            IsDefault = false,
+        };
+        return View("CreateTemplate", vm);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CreateTemplate(MailTemplateEditViewModel model)
+    {
+        var meta = MailKeys.Find(model.MailKey);
+        if (meta == null || !meta.AllowsMultiple)
+        {
+            TempData["Error"] = "Diese Vorlage erlaubt keine weiteren Varianten.";
+            return RedirectToAction("ManageTemplates");
+        }
+
+        if (!ModelState.IsValid)
+        {
+            model.KeyMeta = meta;
+            return View(model);
+        }
+
+        var created = await mailTemplates.CreateCustomAsync(
+            model.MailKey, model.Name.Trim(), model.Subject.Trim(), model.BodyHtml);
+        TempData["Success"] = $"Vorlage \"{created.Name}\" angelegt";
+        return RedirectToAction("Templates", new { key = model.MailKey });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> DeleteTemplate(int id)
+    {
+        var template = await mailTemplates.FindAsync(id);
+        if (template == null) return RedirectToAction("ManageTemplates");
+
+        if (template.IsBuiltIn)
+        {
+            TempData["Error"] = "Eingebaute Vorlagen können nicht gelöscht werden.";
+            return RedirectToAction("Templates", new { key = template.MailKey });
+        }
+
+        var key = template.MailKey;
+        await mailTemplates.DeleteAsync(id);
+        TempData["Success"] = "Vorlage gelöscht";
+        return RedirectToAction("Templates", new { key });
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> SetDefaultTemplate(int id)
+    {
+        var template = await mailTemplates.FindAsync(id);
+        if (template == null) return RedirectToAction("ManageTemplates");
+
+        await mailTemplates.SetDefaultAsync(id);
+        TempData["Success"] = "Standard-Vorlage aktualisiert";
+        return RedirectToAction("Templates", new { key = template.MailKey });
+    }
 
     [HttpPost]
     public async Task<IActionResult> CreateGroup(string name, string? description)
@@ -192,7 +444,9 @@ public class AdminController(
             await db.SaveChangesAsync();
 
             var baseUrl = config.GetValue<string?>("LinkBaseUrl");
-            await mail.SendPasswordResetLink(email.Trim(), $"{baseUrl}/Register/ResetPassword/{link.Id}", link.ValidUntil);
+            var recipient = email.Trim();
+            await mail.SendPasswordResetLink(recipient, $"{baseUrl}/Register/ResetPassword/{link.Id}", link.ValidUntil);
+            await mail.SendAdminPasswordResetLinkCreated(link.Username, recipient);
 
             return Json(new { ok = true });
         }
@@ -240,6 +494,7 @@ public class AdminController(
 
             var baseUrl = config.GetValue<string?>("LinkBaseUrl");
             await mail.SendRegistrationLink(email, $"{baseUrl}/Register/{link.Id}");
+            await mail.SendAdminRegistrationLinkCreated(email);
 
             TempData["Success"] = "Link created & mail sent";
         }
@@ -282,6 +537,18 @@ public class AdminController(
         }
     }
 
+    private async Task TrySend(Func<Task> send, string what)
+    {
+        try
+        {
+            await send();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to send {What}", what);
+        }
+    }
+
     private void HandleError(Exception ex, string action, string userPrefix)
     {
         logger.LogError(ex, "{Action} failed", action);
@@ -289,6 +556,14 @@ public class AdminController(
             ? $"{userPrefix}: {ex.Message}"
             : $"Unexpected error during {action.ToLowerInvariant()}.";
         TempData["Error"] = message;
+    }
+
+    private static string ExtractCn(string dn)
+    {
+        if (string.IsNullOrWhiteSpace(dn)) return string.Empty;
+        var firstRdn = dn.Split(',', 2)[0].Trim();
+        var eq = firstRdn.IndexOf('=');
+        return eq >= 0 ? firstRdn[(eq + 1)..].Trim() : firstRdn;
     }
 
     private static string DecodePassword(string? base64)

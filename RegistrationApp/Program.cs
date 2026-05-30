@@ -24,6 +24,11 @@ builder.Services.AddDataProtection()
 builder.Services.Configure<ADSettings>(builder.Configuration.GetSection("AD"));
 builder.Services.AddSingleton<ADService>();
 
+// MailKit — used for registration confirmation / password change notifications.
+builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("SMTP"));
+builder.Services.AddScoped<MailTemplateService>();
+builder.Services.AddScoped<MailService>();
+
 var app = builder.Build();
 
 if (bool.TryParse(Environment.GetEnvironmentVariable("MIGRATE_REGISTER"), out var doMigration) && doMigration)

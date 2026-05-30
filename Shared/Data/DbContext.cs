@@ -8,6 +8,8 @@ public class AppDbContext : DbContext
     public DbSet<PendingRegistration> PendingRegistrations { get; set; }
     public DbSet<AdminUser> AdminUsers { get; set; }
     public DbSet<PasswordResetLink> PasswordResetLinks { get; set; }
+    public DbSet<MailSetting> MailSettings { get; set; }
+    public DbSet<MailTemplate> MailTemplates { get; set; }
 
     public AppDbContext(DbContextOptions<AppDbContext> options)
         : base(options) { }
@@ -18,5 +20,9 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<PendingRegistration>()
             .HasIndex(p => p.Username)
             .IsUnique(false);
+
+        // Helps the lookup MailKey → templates and the default-template query.
+        modelBuilder.Entity<MailTemplate>()
+            .HasIndex(t => new { t.MailKey, t.IsDefault });
     }
 }

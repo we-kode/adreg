@@ -1,0 +1,118 @@
+@using Shared.Models
+@model List<AdminApp.Models.MailSettingRow>
+
+@{
+    Layout = "_Layout";
+    var userRows = Model.Where(r => r.Audience == MailAudience.User).ToList();
+    var adminRows = Model.Where(r => r.Audience == MailAudience.Admin).ToList();
+}
+
+<h2 class="mb-4">Manage Mails</h2>
+
+<div class="mb-3 d-flex flex-wrap gap-2">
+    <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary">← Pending Registrations</a>
+    <a asp-controller="Admin" asp-action="ManageTemplates" class="btn btn-outline-primary">Mail Templates</a>
+</div>
+
+<p class="text-muted">
+    Hier kannst du festlegen, welche E-Mails der Server verschickt und – bei
+    Admin-Benachrichtigungen – an welche Adresse. Deaktivierte Einträge werden
+    übersprungen. Bleibt das Empfänger-Feld bei einer Admin-Mail leer, wird die
+    konfigurierte SMTP <code>From</code>-Adresse verwendet.
+</p>
+
+<form method="post" asp-action="ManageMails">
+    @Html.AntiForgeryToken()
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-white"><strong>Nachrichten an den Nutzer</strong></div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:64px;">Aktiv</th>
+                        <th>Nachricht</th>
+                        <th style="width:34%;">Empfänger</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (int i = 0; i < Model.Count; i++)
+                    {
+                        var row = Model[i];
+                        if (row.Audience != MailAudience.User) { continue; }
+
+                        <tr>
+                            <td>
+                                <input type="hidden" name="rows[@i].Key" value="@row.Key" />
+                                <input type="hidden" name="rows[@i].Audience" value="@row.Audience" />
+                                <input type="hidden" name="rows[@i].Enabled" value="false" />
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox"
+                                           name="rows[@i].Enabled" value="true"
+                                           @(row.Enabled ? "checked" : "")
+                                           id="enabled_@row.Key" />
+                                </div>
+                            </td>
+                            <td>
+                                <label for="enabled_@row.Key" class="fw-semibold">@row.DisplayName</label>
+                                <div class="text-muted small">@row.Description</div>
+                            </td>
+                            <td>
+                                <span class="text-muted">@row.DefaultRecipientHint</span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-white"><strong>Nachrichten an den Admin</strong></div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:64px;">Aktiv</th>
+                        <th>Nachricht</th>
+                        <th style="width:34%;">Empfänger</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (int i = 0; i < Model.Count; i++)
+                    {
+                        var row = Model[i];
+                        if (row.Audience != MailAudience.Admin) { continue; }
+
+                        <tr>
+                            <td>
+                                <input type="hidden" name="rows[@i].Key" value="@row.Key" />
+                                <input type="hidden" name="rows[@i].Audience" value="@row.Audience" />
+                                <input type="hidden" name="rows[@i].Enabled" value="false" />
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox"
+                                           name="rows[@i].Enabled" value="true"
+                                           @(row.Enabled ? "checked" : "")
+                                           id="enabled_@row.Key" />
+                                </div>
+                            </td>
+                            <td>
+                                <label for="enabled_@row.Key" class="fw-semibold">@row.DisplayName</label>
+                                <div class="text-muted small">@row.Description</div>
+                            </td>
+                            <td>
+                                <input type="email" class="form-control form-control-sm"
+                                       name="rows[@i].Recipient"
+                                       value="@row.Recipient"
+                                       placeholder="@row.DefaultRecipientHint" />
+                                <div class="form-text">Leer lassen für SMTP <code>From</code>.</div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Speichern</button>
+</form>

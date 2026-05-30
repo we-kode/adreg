@@ -4,6 +4,7 @@ using Shared.Data;
 using Shared.Models;
 using Shared.Services;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace RegistrationApp.Controllers;
@@ -13,12 +14,14 @@ public class RegisterController : Controller
 {
     private readonly AppDbContext _db;
     private readonly ADService _adService;
+    private readonly MailService _mail;
     private readonly ILogger<RegisterController> _logger;
 
-    public RegisterController(AppDbContext db, ADService adService, ILogger<RegisterController> logger)
+    public RegisterController(AppDbContext db, ADService adService, MailService mail, ILogger<RegisterController> logger)
     {
         _db = db;
         _adService = adService;
+        _mail = mail;
         _logger = logger;
     }
 
@@ -68,6 +71,13 @@ public class RegisterController : Controller
         link.IsUsed = true;
 
         await _db.SaveChangesAsync();
+
+        var groupNames = ExtractGroupNames(link.GroupsJson);
+
+        await TrySend(() => _mail.SendRegistrationReceivedToUser(link.Email, firstname, lastname),
+            $"registration confirmation to {link.Email}");
+        await TrySend(() => _mail.SendAdminNewRegistration(firstname, lastname, username, link.Email, groupNames),
+            "new-registration notice to admin");
 
         return RedirectToAction("Submitted");
     }
@@ -123,7 +133,65 @@ public class RegisterController : Controller
         link.IsUsed = true;
         await _db.SaveChangesAsync();
 
+        await NotifyPasswordChanged(link);
+
         return RedirectToAction("ResetPasswordDone");
+    }
+
+    private async Task NotifyPasswordChanged(PasswordResetLink link)
+    {
+        string? userEmail = null;
+        try
+        {
+            var user = await _adService.GetUserByDn(link.UserDn);
+            userEmail = user?.Mail;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load user mail for password-change notification ({Dn})", link.UserDn);
+        }
+
+        if (!string.IsNullOrWhiteSpace(userEmail))
+        {
+            await TrySend(() => _mail.SendPasswordChangedToUser(userEmail, link.Username),
+                $"password-change confirmation to {userEmail}");
+        }
+
+        await TrySend(() => _mail.SendAdminPasswordChanged(link.Username, userEmail ?? "(unbekannt)"),
+            "password-change notice to admin");
+    }
+
+    private static List<string> ExtractGroupNames(string groupsJson)
+    {
+        try
+        {
+            var dns = JsonSerializer.Deserialize<List<string>>(groupsJson) ?? new List<string>();
+            return dns.Select(dn =>
+            {
+                if (string.IsNullOrWhiteSpace(dn)) return string.Empty;
+                var firstRdn = dn.Split(',', 2)[0].Trim();
+                var eq = firstRdn.IndexOf('=');
+                return eq >= 0 ? firstRdn[(eq + 1)..].Trim() : firstRdn;
+            })
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToList();
+        }
+        catch
+        {
+            return new List<string>();
+        }
+    }
+
+    private async Task TrySend(Func<Task> send, string what)
+    {
+        try
+        {
+            await send();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to send {What}", what);
+        }
     }
 
     [HttpGet("ResetPasswordDone")]

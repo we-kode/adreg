@@ -1,10 +1,17 @@
-﻿@using Shared.Models
+@using Shared.Models
 @model List<PendingRegistrationDto>
+
+@{
+    var approvedTemplates = (List<MailTemplate>)(ViewBag.ApprovedTemplates ?? new List<MailTemplate>());
+    int? defaultTemplateId = ViewBag.DefaultApprovedTemplateId as int?;
+}
 
 <h2 class="mb-4">Pending Registrations</h2>
 
-<div class="mb-3">
+<div class="mb-3 d-flex flex-wrap gap-2">
     <a asp-controller="Admin" asp-action="Manage" class="btn btn-primary">Manage Directory</a>
+    <a asp-controller="Admin" asp-action="ManageMails" class="btn btn-outline-primary">Manage Mails</a>
+    <a asp-controller="Admin" asp-action="ManageTemplates" class="btn btn-outline-primary">Mail Templates</a>
 </div>
 
 @if (!Model.Any())
@@ -15,14 +22,17 @@
 }
 else
 {
-    <table class="table table-hover table-striped shadow-sm">
+    <table class="table table-hover table-striped shadow-sm align-middle">
 
         <thead class="table-dark">
             <tr>
                 <th>First Name</th>
                 <th>Last Name</th>
                 <th>Username</th>
-                <th>Actions</th>
+                <th>Email</th>
+                <th>Groups</th>
+                <th>Mail Template</th>
+                <th style="width:340px;">Actions</th>
             </tr>
         </thead>
 
@@ -33,14 +43,49 @@ else
                     <td>@r.FirstName</td>
                     <td>@r.LastName</td>
                     <td>@r.Username</td>
+                    <td>@r.Email</td>
+                    <td>
+                        @if (r.GroupNames.Count == 0)
+                        {
+                            <span class="text-muted">&mdash;</span>
+                        }
+                        else
+                        {
+                            foreach (var g in r.GroupNames)
+                            {
+                                <span class="badge bg-secondary me-1">@g</span>
+                            }
+                        }
+                    </td>
 
                     <td>
-                        <form method="post" asp-action="Approve" class="d-inline">
+                        <form id="approve-form-@r.Id" method="post" asp-action="Approve" class="d-flex gap-1 align-items-center">
                             <input type="hidden" name="id" value="@r.Id" />
-                            <button class="btn btn-success btn-sm">Approve</button>
+                            <select name="templateId" class="form-select form-select-sm" style="max-width:180px;"
+                                    title="Vorlage für die Freigabe-Mail">
+                                @foreach (var t in approvedTemplates)
+                                {
+                                    if (defaultTemplateId.HasValue && t.Id == defaultTemplateId.Value)
+                                    {
+                                        <option value="@t.Id" selected>
+                                            @t.Name@(t.IsDefault ? " (Standard)" : "")
+                                        </option>
+                                    }
+                                    else
+                                    {
+                                        <option value="@t.Id">
+                                            @t.Name@(t.IsDefault ? " (Standard)" : "")
+                                        </option>
+                                    }
+                                }
+                            </select>
                         </form>
+                    </td>
 
-                        <form method="post" asp-action="Reject" class="d-inline">
+                    <td class="d-flex gap-1 align-items-center">
+                        <button class="btn btn-success btn-sm" form="approve-form-@r.Id">Approve</button>
+
+                        <form method="post" asp-action="Reject" class="m-0">
                             <input type="hidden" name="id" value="@r.Id" />
                             <button class="btn btn-danger btn-sm">Reject</button>
                         </form>

@@ -1,0 +1,113 @@
+@using Shared.Models
+@using Shared.Services
+@model AdminApp.Models.MailTemplateEditViewModel
+
+@{
+    Layout = "_Layout";
+    var meta = Model.KeyMeta;
+    var displayName = meta?.DisplayName ?? Model.MailKey;
+    var placeholders = MailPlaceholderCatalog.All;
+}
+
+<h2 class="mb-1">Neue Vorlage</h2>
+<p class="text-muted">@displayName</p>
+
+<div class="mb-3 d-flex flex-wrap gap-2">
+    <a asp-controller="Admin" asp-action="Templates" asp-route-key="@Model.MailKey" class="btn btn-secondary">← Vorlagenliste</a>
+</div>
+
+<form method="post" asp-action="CreateTemplate" id="template-form">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="MailKey" />
+
+    <div class="row">
+        <div class="col-lg-9">
+            <div class="card shadow-sm mb-3">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label asp-for="Name" class="form-label">Name der Vorlage</label>
+                        <input asp-for="Name" class="form-control" />
+                        <span asp-validation-for="Name" class="text-danger"></span>
+                    </div>
+
+                    <div class="mb-3">
+                        <label asp-for="Subject" class="form-label">Betreff</label>
+                        <input asp-for="Subject" class="form-control" />
+                        <span asp-validation-for="Subject" class="text-danger"></span>
+                        <div class="form-text">Platzhalter wie <code>{{NAME}}</code> sind auch hier erlaubt.</div>
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="form-label">Inhalt (HTML)</label>
+                        <div id="editor" style="min-height:320px;"></div>
+                        <textarea asp-for="BodyHtml" id="bodyHtmlField" class="d-none"></textarea>
+                        <span asp-validation-for="BodyHtml" class="text-danger"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Anlegen</button>
+                <a asp-action="Templates" asp-route-key="@Model.MailKey" class="btn btn-outline-secondary">Abbrechen</a>
+            </div>
+        </div>
+
+        <div class="col-lg-3">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-white"><strong>Platzhalter</strong></div>
+                <div class="card-body">
+                    <p class="small text-muted mb-2">
+                        Klicken Sie auf einen Platzhalter, um ihn an der aktuellen Position einzufügen.
+                    </p>
+                    <div class="d-flex flex-wrap gap-1">
+                        @foreach (var p in placeholders)
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-secondary placeholder-chip"
+                                    data-token="@p.Token" title="@p.Description">
+                                {{@p.Token}}
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+    <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+
+    <script>
+        const initialHtml = document.getElementById('bodyHtmlField').value;
+        const editor = new Quill('#editor', {
+            theme: 'snow',
+            modules: {
+                toolbar: [
+                    [{ 'header': [1, 2, 3, false] }],
+                    ['bold', 'italic', 'underline', 'strike'],
+                    [{ 'color': [] }, { 'background': [] }],
+                    [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                    [{ 'align': [] }],
+                    ['link', 'image', 'blockquote', 'code-block'],
+                    ['clean']
+                ]
+            }
+        });
+
+        editor.clipboard.dangerouslyPasteHTML(initialHtml || '');
+
+        document.getElementById('template-form').addEventListener('submit', () => {
+            document.getElementById('bodyHtmlField').value = editor.root.innerHTML;
+        });
+
+        document.querySelectorAll('.placeholder-chip').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const token = '{{' + btn.dataset.token + '}}';
+                const range = editor.getSelection(true);
+                editor.insertText(range.index, token, 'user');
+                editor.setSelection(range.index + token.length, 0);
+            });
+        });
+    </script>
+}

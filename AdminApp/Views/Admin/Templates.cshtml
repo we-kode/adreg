@@ -1,0 +1,86 @@
+@using Shared.Models
+@model List<MailTemplate>
+
+@{
+    Layout = "_Layout";
+    var meta = (MailKey)ViewBag.KeyMeta!;
+}
+
+<h2 class="mb-1">Vorlagen: @meta.DisplayName</h2>
+<p class="text-muted">@meta.Description</p>
+
+<div class="mb-3 d-flex flex-wrap gap-2">
+    <a asp-controller="Admin" asp-action="ManageTemplates" class="btn btn-secondary">← Übersicht</a>
+    @if (meta.AllowsMultiple)
+    {
+        <a asp-controller="Admin" asp-action="CreateTemplate" asp-route-key="@meta.Id" class="btn btn-primary">
+            ➕ Neue Vorlage
+        </a>
+    }
+</div>
+
+<div class="card shadow-sm">
+    <div class="table-responsive">
+        <table class="table mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Name</th>
+                    <th>Betreff</th>
+                    <th style="width:160px;">Typ</th>
+                    <th style="width:120px;">Status</th>
+                    <th style="width:260px;" class="text-end">Aktionen</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var t in Model)
+                {
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">@t.Name</div>
+                            <div class="text-muted small">Aktualisiert: @t.UpdatedAt.ToLocalTime():g</div>
+                        </td>
+                        <td>@t.Subject</td>
+                        <td>
+                            @if (t.IsBuiltIn)
+                            {
+                                <span class="badge bg-secondary">Eingebaut</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-success">Eigene Vorlage</span>
+                            }
+                        </td>
+                        <td>
+                            @if (t.IsDefault)
+                            {
+                                <span class="badge bg-primary">Standard</span>
+                            }
+                        </td>
+                        <td class="text-end">
+                            <a class="btn btn-sm btn-primary" asp-action="EditTemplate" asp-route-id="@t.Id">Bearbeiten</a>
+
+                            @if (meta.AllowsMultiple && !t.IsDefault)
+                            {
+                                <form method="post" asp-action="SetDefaultTemplate" class="d-inline">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@t.Id" />
+                                    <button class="btn btn-sm btn-outline-primary">Als Standard</button>
+                                </form>
+                            }
+
+                            @if (!t.IsBuiltIn)
+                            {
+                                <form method="post" asp-action="DeleteTemplate" class="d-inline"
+                                      onsubmit="return confirm('Vorlage wirklich löschen?');">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@t.Id" />
+                                    <button class="btn btn-sm btn-outline-danger">Löschen</button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>

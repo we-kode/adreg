@@ -1,0 +1,101 @@
+@using Shared.Models
+@model List<AdminApp.Models.MailTemplateOverview>
+
+@{
+    Layout = "_Layout";
+    var userRows = Model.Where(r => r.Key.Audience == MailAudience.User).ToList();
+    var adminRows = Model.Where(r => r.Key.Audience == MailAudience.Admin).ToList();
+}
+
+<h2 class="mb-4">Mail Templates</h2>
+
+<div class="mb-3 d-flex flex-wrap gap-2">
+    <a asp-controller="Admin" asp-action="Index" class="btn btn-secondary">← Pending Registrations</a>
+    <a asp-controller="Admin" asp-action="ManageMails" class="btn btn-outline-primary">Mail-Einstellungen</a>
+</div>
+
+<p class="text-muted">
+    Hier können die HTML-Vorlagen für alle vom System verschickten E-Mails bearbeitet werden.
+    Eingebaute Vorlagen können nur bearbeitet, nicht gelöscht werden. Für die Mail an den Nutzer
+    bei einer Freigabe lassen sich zusätzlich eigene Varianten anlegen und als Standard markieren.
+</p>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white"><strong>Nachrichten an den Nutzer</strong></div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Mail</th>
+                    <th style="width:24%;">Anzahl Vorlagen</th>
+                    <th style="width:24%;">Standard</th>
+                    <th style="width:160px;" class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in userRows)
+                {
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">
+                                @row.Key.DisplayName
+                                @if (row.Key.AllowsMultiple)
+                                {
+                                    <span class="badge bg-info text-dark ms-1">Mehrere Vorlagen</span>
+                                }
+                            </div>
+                            <div class="text-muted small">@row.Key.Description</div>
+                        </td>
+                        <td>@row.TemplateCount</td>
+                        <td>@(row.DefaultTemplateName ?? "(noch keine)")</td>
+                        <td class="text-end">
+                            <a class="btn btn-sm btn-primary"
+                               asp-action="Templates"
+                               asp-route-key="@row.Key.Id">Bearbeiten</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-white"><strong>Nachrichten an den Admin</strong></div>
+    <div class="table-responsive">
+        <table class="table table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Mail</th>
+                    <th style="width:24%;">Anzahl Vorlagen</th>
+                    <th style="width:24%;">Standard</th>
+                    <th style="width:160px;" class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in adminRows)
+                {
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">
+                                @row.Key.DisplayName
+                                @if (row.Key.AllowsMultiple)
+                                {
+                                    <span class="badge bg-info text-dark ms-1">Mehrere Vorlagen</span>
+                                }
+                            </div>
+                            <div class="text-muted small">@row.Key.Description</div>
+                        </td>
+                        <td>@row.TemplateCount</td>
+                        <td>@(row.DefaultTemplateName ?? "(noch keine)")</td>
+                        <td class="text-end">
+                            <a class="btn btn-sm btn-primary"
+                               asp-action="Templates"
+                               asp-route-key="@row.Key.Id">Bearbeiten</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>

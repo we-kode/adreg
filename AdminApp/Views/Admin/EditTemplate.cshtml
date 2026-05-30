@@ -1,0 +1,147 @@
+@using Shared.Models
+@using Shared.Services
+@model AdminApp.Models.MailTemplateEditViewModel
+
+@{
+    Layout = "_Layout";
+    var meta = Model.KeyMeta;
+    var displayName = meta?.DisplayName ?? Model.MailKey;
+    var placeholders = MailPlaceholderCatalog.All;
+}
+
+<h2 class="mb-1">Vorlage bearbeiten</h2>
+<p class="text-muted">@displayName</p>
+
+<div class="mb-3 d-flex flex-wrap gap-2">
+    <a asp-controller="Admin" asp-action="Templates" asp-route-key="@Model.MailKey" class="btn btn-secondary">← Vorlagenliste</a>
+</div>
+
+@if (Model.IsBuiltIn)
+{
+    <div class="alert alert-info">
+        Eingebaute Vorlage – Inhalte sind voll editierbar, die Vorlage selbst kann aber nicht gelöscht werden.
+    </div>
+}
+
+<form method="post" asp-action="EditTemplate" id="template-form">
+    @Html.AntiForgeryToken()
+    <input type="hidden" asp-for="Id" />
+    <input type="hidden" asp-for="MailKey" />
+
+    <div class="row">
+        <div class="col-lg-9">
+            <div class="card shadow-sm mb-3">
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label asp-for="Name" class="form-label">Name der Vorlage</label>
+                        @if (meta?.AllowsMultiple == true)
+                        {
+                            <input asp-for="Name" class="form-control" />
+                        }
+                        else
+                        {
+                            <input asp-for="Name" class="form-control" readonly />
+                        }
+                        <span asp-validation-for="Name" class="text-danger"></span>
+                        @if (meta?.AllowsMultiple != true)
+                        {
+                            <div class="form-text">Der Name dieser Vorlage ist fest vorgegeben.</div>
+                        }
+                    </div>
+
+                    <div class="mb-3">
+                        <label asp-for="Subject" class="form-label">Betreff</label>
+                        <input asp-for="Subject" class="form-control" />
+                        <span asp-validation-for="Subject" class="text-danger"></span>
+                        <div class="form-text">Platzhalter wie <code>{{NAME}}</code> sind auch hier erlaubt.</div>
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="form-label">Inhalt (HTML)</label>
+                        <div id="editor" style="min-height:320px;"></div>
+                        <textarea asp-for="BodyHtml" id="bodyHtmlField" class="d-none"></textarea>
+                        <span asp-validation-for="BodyHtml" class="text-danger"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary">Speichern</button>
+                <a asp-action="Templates" asp-route-key="@Model.MailKey" class="btn btn-outline-secondary">Abbrechen</a>
+            </div>
+        </div>
+
+        <div class="col-lg-3">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-white"><strong>Platzhalter</strong></div>
+                <div class="card-body">
+                    <p class="small text-muted mb-2">
+                        Beim Versand werden die Platzhalter durch die jeweiligen Werte ersetzt.
+                        Klicken Sie auf einen Platzhalter, um ihn an der aktuellen Position einzufügen.
+                    </p>
+                    <div class="d-flex flex-wrap gap-1">
+                        @foreach (var p in placeholders)
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-secondary placeholder-chip"
+                                    data-token="@p.Token" title="@p.Description">
+                                {{@p.Token}}
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm">
+                <div class="card-header bg-white"><strong>Tipps</strong></div>
+                <div class="card-body small text-muted">
+                    <ul class="ps-3 mb-0">
+                        <li>Bilder können per Toolbar eingebettet werden (als Base64).</li>
+                        <li>Links erstellen Sie über das Link-Icon der Toolbar.</li>
+                        <li>Unbekannte <code>{{TOKEN}}</code> bleiben unverändert stehen.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+
+@section Scripts {
+    <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+
+    <script>
+        const initialHtml = document.getElementById('bodyHtmlField').value;
+        const editor = new Quill('#editor', {
+            theme: 'snow',
+            modules: {
+                toolbar: [
+                    [{ 'header': [1, 2, 3, false] }],
+                    ['bold', 'italic', 'underline', 'strike'],
+                    [{ 'color': [] }, { 'background': [] }],
+                    [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+                    [{ 'align': [] }],
+                    ['link', 'image', 'blockquote', 'code-block'],
+                    ['clean']
+                ]
+            }
+        });
+
+        // Pre-fill from existing template HTML using the safe API (no innerHTML).
+        editor.clipboard.dangerouslyPasteHTML(initialHtml || '');
+
+        // On submit, copy the rendered HTML back into the hidden textarea.
+        document.getElementById('template-form').addEventListener('submit', () => {
+            document.getElementById('bodyHtmlField').value = editor.root.innerHTML;
+        });
+
+        // Placeholder chips: insert {{TOKEN}} at the current cursor position.
+        document.querySelectorAll('.placeholder-chip').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const token = '{{' + btn.dataset.token + '}}';
+                const range = editor.getSelection(true);
+                editor.insertText(range.index, token, 'user');
+                editor.setSelection(range.index + token.length, 0);
+            });
+        });
+    </script>
+}

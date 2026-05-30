@@ -28,7 +28,8 @@ builder.Services.AddSingleton<ADService>();
 
 // MailKit
 builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("SMTP"));
-builder.Services.AddSingleton<MailService>();
+builder.Services.AddScoped<MailTemplateService>();
+builder.Services.AddScoped<MailService>();
 
 builder.Services.AddScoped<AuthService>();
 
