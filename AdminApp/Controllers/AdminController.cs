@@ -380,6 +380,48 @@ public class AdminController(
     public Task<IActionResult> GetGroupsForUser(string userDn) =>
         DirectoryJson(() => adService.GetGroupsForUser(userDn), "groups for user");
 
+    [HttpPost]
+    public async Task<IActionResult> AddUserToGroup(string userDn, string groupDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn) || string.IsNullOrWhiteSpace(groupDn))
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            return Json(new { error = "userDn and groupDn are required" });
+        }
+        try
+        {
+            await adService.AddUserToGroup(userDn, groupDn);
+            return Json(new { ok = true });
+        }
+        catch (DirectoryServiceException ex)
+        {
+            logger.LogError(ex, "Failed to add user {User} to group {Group}", userDn, groupDn);
+            Response.StatusCode = StatusCodes.Status500InternalServerError;
+            return Json(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> RemoveUserFromGroup(string userDn, string groupDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn) || string.IsNullOrWhiteSpace(groupDn))
+        {
+            Response.StatusCode = StatusCodes.Status400BadRequest;
+            return Json(new { error = "userDn and groupDn are required" });
+        }
+        try
+        {
+            await adService.RemoveUserFromGroup(userDn, groupDn);
+            return Json(new { ok = true });
+        }
+        catch (DirectoryServiceException ex)
+        {
+            logger.LogError(ex, "Failed to remove user {User} from group {Group}", userDn, groupDn);
+            Response.StatusCode = StatusCodes.Status500InternalServerError;
+            return Json(new { error = ex.Message });
+        }
+    }
+
     [HttpGet]
     public async Task<IActionResult> GetUserDetails(string userDn)
     {

@@ -72,6 +72,30 @@ public class ADService
         return Execute(conn => GroupsForUser(conn, userDn), $"GetGroupsForUser({userDn})");
     }
 
+    public Task AddUserToGroup(string userDn, string groupDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn)) throw new ArgumentException("User DN required", nameof(userDn));
+        if (string.IsNullOrWhiteSpace(groupDn)) throw new ArgumentException("Group DN required", nameof(groupDn));
+
+        return Execute<int>(conn =>
+        {
+            AddAttribute(conn, groupDn, _profile.MemberAttribute, userDn);
+            return 0;
+        }, $"AddUserToGroup({userDn}, {groupDn})");
+    }
+
+    public Task RemoveUserFromGroup(string userDn, string groupDn)
+    {
+        if (string.IsNullOrWhiteSpace(userDn)) throw new ArgumentException("User DN required", nameof(userDn));
+        if (string.IsNullOrWhiteSpace(groupDn)) throw new ArgumentException("Group DN required", nameof(groupDn));
+
+        return Execute<int>(conn =>
+        {
+            RemoveAttribute(conn, groupDn, _profile.MemberAttribute, userDn);
+            return 0;
+        }, $"RemoveUserFromGroup({userDn}, {groupDn})");
+    }
+
     public Task<DirectoryUser?> GetUserByDn(string userDn)
     {
         if (string.IsNullOrWhiteSpace(userDn)) return Task.FromResult<DirectoryUser?>(null);
@@ -372,6 +396,9 @@ public class ADService
 
     private static void AddAttribute(LdapConnection conn, string dn, string name, string value) =>
         SendModify(conn, dn, BuildModification(name, value, DirectoryAttributeOperation.Add));
+
+    private static void RemoveAttribute(LdapConnection conn, string dn, string name, string value) =>
+        SendModify(conn, dn, BuildModification(name, value, DirectoryAttributeOperation.Delete));
 
     private static DirectoryAttributeModification BuildModification(string name, string value, DirectoryAttributeOperation op)
     {

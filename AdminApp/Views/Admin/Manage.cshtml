@@ -44,9 +44,14 @@
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <h5 id="detailTitle" class="mb-0">Details</h5>
-                    <button id="resetPasswordBtn" type="button" class="btn btn-warning btn-sm d-none">
-                        🔑 Reset Password
-                    </button>
+                    <div>
+                        <button id="topAddBtn" type="button" class="btn btn-outline-primary btn-sm d-none me-2">
+                            + Hinzufügen
+                        </button>
+                        <button id="resetPasswordBtn" type="button" class="btn btn-warning btn-sm d-none">
+                            🔑 Reset Password
+                        </button>
+                    </div>
                 </div>
                 <div id="detailsArea">Select a group or user to load related items.</div>
             </div>
@@ -85,6 +90,46 @@
     </div>
 </div>
 
+<div class="modal fade" id="addToModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addToModalTitle">Hinzufügen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="addToError" class="alert alert-danger d-none"></div>
+                <div class="mb-3">
+                    <label class="form-label" id="addToSearchLabel">Suchen</label>
+                    <div class="input-group">
+                        <input type="text" id="addToSearchInput" class="form-control" />
+                        <button class="btn btn-outline-secondary" id="addToSearchBtn">Suchen</button>
+                    </div>
+                </div>
+                <ul id="addToResultList" class="list-group list-group-flush" style="max-height:40vh; overflow:auto"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="removeConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Entfernen bestätigen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="removeConfirmMessage" class="mb-0"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" id="removeConfirmBtn" class="btn btn-danger">Entfernen</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
     <script>
         const loadBtn = document.getElementById('loadBtn');
@@ -94,6 +139,7 @@
         const detailTitle = document.getElementById('detailTitle');
         const detailsArea = document.getElementById('detailsArea');
         const listTitle = document.getElementById('listTitle');
+        const topAddBtn = document.getElementById('topAddBtn');
         const resetPasswordBtn = document.getElementById('resetPasswordBtn');
         const resetPasswordModalEl = document.getElementById('resetPasswordModal');
         const resetPasswordModal = new bootstrap.Modal(resetPasswordModalEl);
@@ -103,7 +149,25 @@
         const resetPasswordError = document.getElementById('resetPasswordError');
         const resetPasswordConfirmBtn = document.getElementById('resetPasswordConfirmBtn');
 
+        const addToModalEl = document.getElementById('addToModal');
+        const addToModal = addToModalEl ? new bootstrap.Modal(addToModalEl) : null;
+        const addToModalTitle = document.getElementById('addToModalTitle');
+        const addToSearchLabel = document.getElementById('addToSearchLabel');
+        const addToSearchInput = document.getElementById('addToSearchInput');
+        const addToSearchBtn = document.getElementById('addToSearchBtn');
+        const addToResultList = document.getElementById('addToResultList');
+        const addToError = document.getElementById('addToError');
+
+        const removeConfirmModalEl = document.getElementById('removeConfirmModal');
+        const removeConfirmModal = removeConfirmModalEl ? new bootstrap.Modal(removeConfirmModalEl) : null;
+        const removeConfirmMessage = document.getElementById('removeConfirmMessage');
+        const removeConfirmBtn = document.getElementById('removeConfirmBtn');
+
+        let removePendingAction = null;
+
         let selectedUser = null;
+        let selectedGroup = null;
+        let currentAddMode = null;
 
         function setSelectedUser(user) {
             selectedUser = user;
@@ -117,6 +181,8 @@
         function clearDetails() {
             detailsArea.innerHTML = '';
             setSelectedUser(null);
+            selectedGroup = null;
+            topAddBtn.classList.add('d-none');
         }
 
         async function fetchJson(url) {
@@ -144,7 +210,7 @@
             detailsArea.innerHTML = `<div class="alert alert-danger">${escapeHtml(message)}</div>`;
         }
 
-        function makeUserRow(user, onRowClick) {
+        function makeUserRow(user, onRowClick, onRemoveClick) {
             const li = document.createElement('li');
             li.className = 'list-group-item d-flex justify-content-between align-items-center';
             li.dataset.dn = user.dn;
@@ -160,6 +226,19 @@
             }
 
             li.appendChild(label);
+            
+            if (onRemoveClick) {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-sm btn-outline-danger ms-2';
+                btn.innerHTML = '🗑️';
+                btn.title = 'Entfernen';
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    onRemoveClick(user.dn, user.name);
+                };
+                li.appendChild(btn);
+            }
+
             return li;
         }
 
@@ -186,30 +265,46 @@
         }
 
         function renderRelatedList(items, onClick, emptyMessage, isUsers) {
+            detailsArea.innerHTML = '';
+            
             if (!items.length) {
                 detailsArea.innerHTML = `<div class="alert alert-info">${escapeHtml(emptyMessage)}</div>`;
-                return;
-            }
-            const ul = document.createElement('ul');
-            ul.className = 'list-group';
-            items.forEach(i => {
-                if (isUsers) {
-                    ul.appendChild(makeUserRow(i, onClick));
-                    return;
-                }
+            } else {
+                const ul = document.createElement('ul');
+                ul.className = 'list-group mb-3';
+                items.forEach(i => {
+                    if (isUsers) {
+                        ul.appendChild(makeUserRow(i, onClick, () => removeUserFromSelectedGroup(i.dn, i.name)));
+                    } else {
+                        const li = document.createElement('li');
+                        li.className = onClick ? 'list-group-item list-group-item-action d-flex justify-content-between align-items-center' : 'list-group-item d-flex justify-content-between align-items-center';
+                        
+                        const label = document.createElement('span');
+                        label.textContent = i.name;
+                        label.style.flex = '1 1 auto';
+                        if (onClick) {
+                            li.style.cursor = 'pointer';
+                            label.addEventListener('click', () => onClick(i.dn, i.name));
+                        }
+                        li.appendChild(label);
+                        
+                        if (selectedUser) {
+                            const btn = document.createElement('button');
+                            btn.className = 'btn btn-sm btn-outline-danger ms-2';
+                            btn.innerHTML = '🗑️';
+                            btn.title = 'Entfernen';
+                            btn.onclick = (e) => {
+                                e.stopPropagation();
+                                removeGroupFromSelectedUser(i.dn, i.name);
+                            };
+                            li.appendChild(btn);
+                        }
 
-                const li = document.createElement('li');
-                li.className = onClick ? 'list-group-item list-group-item-action' : 'list-group-item';
-                li.textContent = i.name;
-                if (onClick) {
-                    li.dataset.dn = i.dn;
-                    li.style.cursor = 'pointer';
-                    li.addEventListener('click', () => onClick(i.dn, i.name));
-                }
-                ul.appendChild(li);
-            });
-            detailsArea.innerHTML = '';
-            detailsArea.appendChild(ul);
+                        ul.appendChild(li);
+                    }
+                });
+                detailsArea.appendChild(ul);
+            }
         }
 
         async function loadAndRender(url, onClick, loadingText, emptyMessage, errorPrefix, isUsers) {
@@ -225,7 +320,11 @@
         async function onSelectItem(dn, name, type) {
             clearDetails();
             if (type === 'groups') {
+                selectedGroup = { dn, name };
                 detailTitle.textContent = 'Users in ' + name;
+                topAddBtn.textContent = '+ Nutzer hinzufügen';
+                topAddBtn.onclick = () => openAddModal('users');
+                topAddBtn.classList.remove('d-none');
                 await loadAndRender(
                     `/Admin/GetUsersInGroup?groupDn=${encodeURIComponent(dn)}`,
                     onSelectUserFromGroup,
@@ -237,6 +336,9 @@
             } else {
                 setSelectedUser({ dn, name });
                 detailTitle.textContent = 'Groups of ' + name;
+                topAddBtn.textContent = '+ Gruppe hinzufügen';
+                topAddBtn.onclick = () => openAddModal('groups');
+                topAddBtn.classList.remove('d-none');
                 await loadAndRender(
                     `/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`,
                     null,
@@ -249,8 +351,13 @@
         }
 
         async function onSelectUserFromGroup(dn, name) {
+            clearDetails();
+            selectedGroup = null;
             setSelectedUser({ dn, name });
             detailTitle.textContent = name + ' — groups';
+            topAddBtn.textContent = '+ Gruppe hinzufügen';
+            topAddBtn.onclick = () => openAddModal('groups');
+            topAddBtn.classList.remove('d-none');
             await loadAndRender(
                 `/Admin/GetGroupsForUser?userDn=${encodeURIComponent(dn)}`,
                 null,
@@ -362,5 +469,137 @@
             }
             renderList(result.data, isGroups ? 'groups' : 'users');
         });
+
+        function removeUserFromSelectedGroup(userDn, userName) {
+            removeConfirmMessage.textContent = `Möchtest du ${userName} wirklich aus ${selectedGroup.name} entfernen?`;
+            removePendingAction = async () => {
+                removeConfirmBtn.disabled = true;
+                const res = await fetch('/Admin/RemoveUserFromGroup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ userDn, groupDn: selectedGroup.dn }).toString()
+                });
+                const data = await res.json().catch(() => null);
+                removeConfirmBtn.disabled = false;
+                if (!res.ok) alert(data?.error || 'Fehler beim Entfernen');
+                else {
+                    removeConfirmModal.hide();
+                    onSelectItem(selectedGroup.dn, selectedGroup.name, 'groups');
+                }
+            };
+            removeConfirmModal.show();
+        }
+
+        function removeGroupFromSelectedUser(groupDn, groupName) {
+            removeConfirmMessage.textContent = `Möchtest du ${selectedUser.name} wirklich aus ${groupName} entfernen?`;
+            removePendingAction = async () => {
+                removeConfirmBtn.disabled = true;
+                const res = await fetch('/Admin/RemoveUserFromGroup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ userDn: selectedUser.dn, groupDn }).toString()
+                });
+                const data = await res.json().catch(() => null);
+                removeConfirmBtn.disabled = false;
+                if (!res.ok) alert(data?.error || 'Fehler beim Entfernen');
+                else {
+                    removeConfirmModal.hide();
+                    onSelectItem(selectedUser.dn, selectedUser.name, 'users');
+                }
+            };
+            removeConfirmModal.show();
+        }
+
+        if (removeConfirmBtn) {
+            removeConfirmBtn.addEventListener('click', () => {
+                if (removePendingAction) removePendingAction();
+            });
+        }
+
+        function openAddModal(type) {
+            currentAddMode = type;
+            addToError.classList.add('d-none');
+            addToSearchInput.value = '';
+            addToResultList.innerHTML = '';
+            if (type === 'groups') {
+                addToModalTitle.textContent = `Gruppe zu ${selectedUser.name} hinzufügen`;
+                addToSearchLabel.textContent = 'Gruppen suchen';
+            } else {
+                addToModalTitle.textContent = `Nutzer zu ${selectedGroup.name} hinzufügen`;
+                addToSearchLabel.textContent = 'Nutzer suchen';
+            }
+            addToModal.show();
+        }
+
+        if (addToSearchBtn) {
+            addToSearchBtn.addEventListener('click', async () => {
+                const q = addToSearchInput.value;
+                addToError.classList.add('d-none');
+                addToResultList.innerHTML = '<li class="list-group-item text-muted">Lädt...</li>';
+
+                const url = currentAddMode === 'groups'
+                    ? `/Admin/GetGroups?q=${encodeURIComponent(q)}`
+                    : `/Admin/GetUsers?q=${encodeURIComponent(q)}`;
+
+                const res = await fetchJson(url);
+                if (res.error) {
+                    addToError.textContent = res.error;
+                    addToError.classList.remove('d-none');
+                    addToResultList.innerHTML = '';
+                    return;
+                }
+
+                addToResultList.innerHTML = '';
+                if (!res.data || res.data.length === 0) {
+                    addToResultList.innerHTML = '<li class="list-group-item text-muted">Keine Treffer gefunden</li>';
+                    return;
+                }
+
+                res.data.forEach(i => {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    li.textContent = i.name;
+                    
+                    const btn = document.createElement('button');
+                    btn.className = 'btn btn-sm btn-primary ms-2';
+                    btn.textContent = 'Hinzufügen';
+                    btn.onclick = () => performAdd(i.dn);
+                    
+                    li.appendChild(btn);
+                    addToResultList.appendChild(li);
+                });
+            });
+        }
+
+        addToSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addToSearchBtn.click();
+            }
+        });
+
+        async function performAdd(dn) {
+            const userDn = currentAddMode === 'groups' ? selectedUser.dn : dn;
+            const groupDn = currentAddMode === 'groups' ? dn : selectedGroup.dn;
+
+            const res = await fetch('/Admin/AddUserToGroup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({ userDn, groupDn }).toString()
+            });
+            const data = await res.json().catch(() => null);
+            
+            if (!res.ok) {
+                addToError.textContent = data?.error || 'Fehler beim Hinzufügen';
+                addToError.classList.remove('d-none');
+            } else {
+                addToModal.hide();
+                if (currentAddMode === 'groups') {
+                    onSelectItem(selectedUser.dn, selectedUser.name, 'users');
+                } else {
+                    onSelectItem(selectedGroup.dn, selectedGroup.name, 'groups');
+                }
+            }
+        }
     </script>
 }
