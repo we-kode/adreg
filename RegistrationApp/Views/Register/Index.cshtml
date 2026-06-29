@@ -1,4 +1,4 @@
-﻿@using Shared.Models
+@using Shared.Models
 @model RegistrationLink
 
 @{
@@ -54,12 +54,20 @@
         const form = document.getElementById('regForm');
 
         let timer = 0;
+        let policy = { minLength: 8, requireComplexity: true };
 
         function debounce(fn, ms) {
             return function () {
                 clearTimeout(timer);
                 timer = setTimeout(() => fn.apply(this, arguments), ms);
             }
+        }
+
+        async function loadPolicy() {
+            try {
+                const resp = await fetch('/Register/GetPasswordPolicy');
+                if (resp.ok) policy = await resp.json();
+            } catch (e) { console.warn('Could not load password policy, using defaults', e); }
         }
 
         async function updateUsername() {
@@ -71,6 +79,7 @@
                 const jd = await resp.json();
                 user.value = jd.username || '';
             } catch (e) { console.warn(e); }
+            validateForm();
         }
 
         const debouncedUpdate = debounce(updateUsername, 300);
@@ -83,6 +92,7 @@
         function validateForm() {
             const f = first.value.trim();
             const l = last.value.trim();
+            const u = user.value.trim();
             const p = pwd.value;
             const c = conf.value;
 
@@ -90,11 +100,20 @@
             if (!f) msgs.push('Vorname erforderlich');
             if (!l) msgs.push('Nachname erforderlich');
             if (!p) msgs.push('Passwort erforderlich');
-            if (p && p.length < 8) msgs.push('Passwort muss mindestens 8 Zeichen haben');
-            if (p && !/[A-Z]/.test(p)) msgs.push('Passwort benötigt einen Großbuchstaben');
-            if (p && !/[a-z]/.test(p)) msgs.push('Passwort benötigt einen Kleinbuchstaben');
-            if (p && !/[0-9]/.test(p)) msgs.push('Passwort benötigt eine Zahl');
-            if (p && !/[^a-zA-Z0-9]/.test(p)) msgs.push('Passwort benötigt ein Sonderzeichen');
+
+            if (p) {
+                if (p.length < policy.minLength) msgs.push(`Passwort muss mindestens ${policy.minLength} Zeichen haben`);
+                if (policy.requireComplexity) {
+                    if (!/[A-Z]/.test(p)) msgs.push('Passwort benötigt einen Großbuchstaben');
+                    if (!/[a-z]/.test(p)) msgs.push('Passwort benötigt einen Kleinbuchstaben');
+                    if (!/[0-9]/.test(p)) msgs.push('Passwort benötigt eine Zahl');
+                    if (!/[^a-zA-Z0-9]/.test(p)) msgs.push('Passwort benötigt ein Sonderzeichen');
+                }
+                if (u && p.toLowerCase().includes(u.toLowerCase())) msgs.push('Passwort darf nicht den Benutzernamen enthalten');
+                if (f && p.toLowerCase().includes(f.toLowerCase())) msgs.push('Passwort darf nicht den Vornamen enthalten');
+                if (l && p.toLowerCase().includes(l.toLowerCase())) msgs.push('Passwort darf nicht den Nachnamen enthalten');
+            }
+
             if (p && c && p !== c) msgs.push('Passwörter stimmen nicht überein');
 
             validation.innerText = msgs.join('; ');
@@ -108,7 +127,7 @@
             setTimeout(() => form.submit(), 1300);
         });
 
-        // initial validation
-        validateForm();
+        // load policy then run initial validation
+        loadPolicy().then(validateForm);
     </script>
 }

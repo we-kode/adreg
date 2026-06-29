@@ -1,5 +1,6 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Shared.Data;
 using Shared.Models;
 using Shared.Services;
@@ -16,13 +17,15 @@ public class RegisterController : Controller
     private readonly ADService _adService;
     private readonly MailService _mail;
     private readonly ILogger<RegisterController> _logger;
+    private readonly ADSettings _adSettings;
 
-    public RegisterController(AppDbContext db, ADService adService, MailService mail, ILogger<RegisterController> logger)
+    public RegisterController(AppDbContext db, ADService adService, MailService mail, ILogger<RegisterController> logger, IOptions<ADSettings> adSettings)
     {
         _db = db;
         _adService = adService;
         _mail = mail;
         _logger = logger;
+        _adSettings = adSettings.Value;
     }
 
     [HttpGet("{id}")]
@@ -50,12 +53,11 @@ public class RegisterController : Controller
         if (password != confirm)
             return BadRequest("Passwords do not match");
 
-        var pwdOk = ValidatePassword(password, out var pwdMsg);
-        if (!pwdOk) return BadRequest(pwdMsg);
-
-        // build username suggestion and ensure uniqueness among pending registrations
         var baseUsername = MakeUsername(firstname, lastname);
         var username = GenerateAvailableUsername(baseUsername);
+
+        var pwdCheck = await ValidatePasswordAsync(password, username, firstname, lastname);
+        if (!pwdCheck.IsValid) return BadRequest(pwdCheck.Message);
 
         _db.PendingRegistrations.Add(new PendingRegistration
         {
@@ -113,9 +115,13 @@ public class RegisterController : Controller
             return View("ResetPassword", link);
         }
 
-        if (!ValidatePassword(password, out var pwdMsg))
+        var user = await _adService.GetUserByDn(link.UserDn);
+        var firstname = user?.Name ?? string.Empty;
+
+        var pwdCheck = await ValidatePasswordAsync(password, link.Username, firstname, string.Empty);
+        if (!pwdCheck.IsValid)
         {
-            ViewBag.Error = pwdMsg;
+            ViewBag.Error = pwdCheck.Message;
             return View("ResetPassword", link);
         }
 
@@ -126,7 +132,7 @@ public class RegisterController : Controller
         catch (DirectoryServiceException ex)
         {
             _logger.LogError(ex, "Failed to update password for {Dn}", link.UserDn);
-            ViewBag.Error = $"Passwort konnte nicht aktualisiert werden: {ex.Message}";
+            ViewBag.Error = $"Der Domaincontroller hat das Passwort nicht akzeptiert. Fehler: {ex.Message}";
             return View("ResetPassword", link);
         }
 
@@ -208,6 +214,23 @@ public class RegisterController : Controller
         return Json(new { username = suggestion });
     }
 
+    [HttpGet("GetPasswordPolicy")]
+    public async Task<IActionResult> GetPasswordPolicyEndpoint()
+    {
+        try
+        {
+            var policy = await _adService.GetPasswordPolicy();
+            var minLength = policy.IsConfigured ? policy.MinLength : (_adSettings.FallbackMinPasswordLength ?? 8);
+            var requireComplexity = policy.IsConfigured ? policy.RequireComplexity : (_adSettings.FallbackRequirePasswordComplexity ?? true);
+            return Json(new { minLength, requireComplexity });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not fetch password policy for client validation, returning defaults");
+            return Json(new { minLength = _adSettings.FallbackMinPasswordLength ?? 8, requireComplexity = _adSettings.FallbackRequirePasswordComplexity ?? true });
+        }
+    }
+
     private static string MakeUsername(string firstname, string lastname)
     {
         var raw = (firstname + "." + lastname).ToLowerInvariant();
@@ -238,20 +261,35 @@ public class RegisterController : Controller
         return baseUsername + (max + 1);
     }
 
-    private static bool ValidatePassword(string pwd, out string message)
+    private async Task<(bool IsValid, string Message)> ValidatePasswordAsync(string pwd, string username, string firstname, string lastname)
     {
-        message = "";
-        if (string.IsNullOrEmpty(pwd) || pwd.Length < 8)
+        if (string.IsNullOrEmpty(pwd))
+            return (false, "Password cannot be empty");
+
+        if (!string.IsNullOrEmpty(username) && pwd.Contains(username, StringComparison.OrdinalIgnoreCase))
+            return (false, "Password must not contain your username");
+            
+        if (!string.IsNullOrEmpty(firstname) && pwd.Contains(firstname, StringComparison.OrdinalIgnoreCase))
+            return (false, "Password must not contain your first name");
+            
+        if (!string.IsNullOrEmpty(lastname) && pwd.Contains(lastname, StringComparison.OrdinalIgnoreCase))
+            return (false, "Password must not contain your last name");
+
+        var policy = await _adService.GetPasswordPolicy();
+        var minLength = policy.IsConfigured ? policy.MinLength : (_adSettings.FallbackMinPasswordLength ?? 8);
+        var requireComplexity = policy.IsConfigured ? policy.RequireComplexity : (_adSettings.FallbackRequirePasswordComplexity ?? true);
+
+        if (pwd.Length < minLength)
+            return (false, $"Password must be at least {minLength} characters long");
+
+        if (requireComplexity)
         {
-            message = "Password must be at least 8 characters long";
-            return false;
+            if (!Regex.IsMatch(pwd, "[A-Z]")) return (false, "Password must contain an uppercase letter");
+            if (!Regex.IsMatch(pwd, "[a-z]")) return (false, "Password must contain a lowercase letter");
+            if (!Regex.IsMatch(pwd, "[0-9]")) return (false, "Password must contain a digit");
+            if (!Regex.IsMatch(pwd, "[^a-zA-Z0-9]")) return (false, "Password must contain a special character");
         }
 
-        if (!Regex.IsMatch(pwd, "[A-Z]")) { message = "Password must contain an uppercase letter"; return false; }
-        if (!Regex.IsMatch(pwd, "[a-z]")) { message = "Password must contain a lowercase letter"; return false; }
-        if (!Regex.IsMatch(pwd, "[0-9]")) { message = "Password must contain a digit"; return false; }
-        if (!Regex.IsMatch(pwd, "[^a-zA-Z0-9]")) { message = "Password must contain a special character"; return false; }
-
-        return true;
+        return (true, "");
     }
 }

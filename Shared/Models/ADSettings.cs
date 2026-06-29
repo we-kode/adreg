@@ -44,4 +44,10 @@ public class ADSettings
 
     // Optional override for the username attribute. Defaults: sAMAccountName for AD, uid for LDAP.
     public string UsernameAttribute { get; set; } = string.Empty;
+
+    // Fallback minimum password length if the domain controller policy cannot be read.
+    public int? FallbackMinPasswordLength { get; set; }
+
+    // Fallback complexity requirement if the domain controller policy cannot be read.
+    public bool? FallbackRequirePasswordComplexity { get; set; }
 }

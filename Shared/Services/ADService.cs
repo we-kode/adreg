@@ -117,6 +117,11 @@ public class ADService
         }, $"SetUserPassword({userDn})");
     }
 
+    public Task<PasswordPolicy> GetPasswordPolicy()
+    {
+        return Execute(conn => ReadPasswordPolicy(conn), "GetPasswordPolicy()");
+    }
+
     private DirectoryUser? ReadUser(LdapConnection conn, string userDn)
     {
         try
@@ -135,6 +140,77 @@ public class ADService
         {
             return null;
         }
+    }
+
+    private PasswordPolicy ReadPasswordPolicy(LdapConnection conn)
+    {
+        var policy = new PasswordPolicy { IsConfigured = false };
+        try
+        {
+            if (_profile.Type == DirectoryServerType.ActiveDirectory)
+            {
+                var domainRoot = ResolveDomainRoot(_settings.SearchBase);
+                if (!string.IsNullOrEmpty(domainRoot))
+                {
+                    var resp = (SearchResponse)conn.SendRequest(
+                        new SearchRequest(domainRoot, "(objectClass=domainDNS)", SearchScope.Base, "minPwdLength", "pwdProperties"));
+                    var entry = resp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
+                    if (entry != null)
+                    {
+                        var minLengthStr = GetAttribute(entry, "minPwdLength");
+                        var pwdPropsStr = GetAttribute(entry, "pwdProperties");
+                        if (int.TryParse(minLengthStr, out var minLength))
+                        {
+                            policy.MinLength = minLength;
+                            policy.IsConfigured = true;
+                        }
+                        if (int.TryParse(pwdPropsStr, out var pwdProps))
+                        {
+                            policy.RequireComplexity = (pwdProps & 1) == 1; // 1 = DOMAIN_PASSWORD_COMPLEX
+                            policy.IsConfigured = true;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                var baseDn = _settings.SearchBase?.Trim() ?? string.Empty;
+                if (!string.IsNullOrEmpty(baseDn))
+                {
+                    var resp = (SearchResponse)conn.SendRequest(
+                        new SearchRequest(baseDn, "(objectClass=pwdPolicy)", SearchScope.Subtree, "pwdMinLength", "pwdCheckQuality"));
+                    var entry = resp.Entries.Cast<SearchResultEntry>().FirstOrDefault();
+                    if (entry != null)
+                    {
+                        var minLengthStr = GetAttribute(entry, "pwdMinLength");
+                        var checkQualityStr = GetAttribute(entry, "pwdCheckQuality");
+                        if (int.TryParse(minLengthStr, out var minLength))
+                        {
+                            policy.MinLength = minLength;
+                            policy.IsConfigured = true;
+                        }
+                        if (int.TryParse(checkQualityStr, out var checkQuality))
+                        {
+                            policy.RequireComplexity = checkQuality > 0;
+                            policy.IsConfigured = true;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read password policy from directory. Falling back to configured/default rules.");
+        }
+        return policy;
+    }
+
+    private static string? ResolveDomainRoot(string searchBase)
+    {
+        if (string.IsNullOrWhiteSpace(searchBase)) return null;
+        var parts = searchBase.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var dcParts = parts.Where(p => p.StartsWith("DC=", StringComparison.OrdinalIgnoreCase)).ToArray();
+        return dcParts.Length > 0 ? string.Join(",", dcParts) : null;
     }
 
     // ---------- Search ----------
@@ -348,7 +424,7 @@ public class ADService
                 ReplaceAttribute(conn, userDn, _profile.PasswordAttribute, password);
 
             if (_profile.RequiresAccountEnable)
-                ReplaceAttribute(conn, userDn, "userAccountControl", "512");
+                ReplaceAttribute(conn, userDn, "userAccountControl", "66048"); // 512 (Normal Account) + 65536 (Password never expires)
         }
         catch (DirectoryOperationException ex)
         {

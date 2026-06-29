@@ -77,7 +77,7 @@ public class AdminController(
         }
         catch (Exception ex)
         {
-            HandleError(ex, $"Approve registration {id}", "Failed to create user in directory");
+            HandleError(ex, $"Approve registration {id}", "Fehler beim Erstellen des Nutzers im Domaincontroller/LDAP");
         }
 
         return RedirectToAction("Index");

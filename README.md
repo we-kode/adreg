@@ -51,6 +51,8 @@ Active Directory is **prioritized**: if `AD__ServerType` is omitted or set to an
 | `AD__GroupsObjectClasses` | Optional comma-separated object classes treated as groups. Defaults to `group` (AD) or `groupOfNames` (LDAP). |
 | `AD__UsernameAttribute` | Optional override for the username attribute. Defaults to `sAMAccountName` (AD) or `uid` (LDAP). |
 | `AD__InvitationSenderEmail` | Optional. If set, written to the user's `mail` attribute instead of the user's own address. |
+| `AD__FallbackMinPasswordLength` | Optional. Fallback minimum password length if the domain controller does not provide it. Defaults to 8. |
+| `AD__FallbackRequirePasswordComplexity` | Optional. Fallback requirement for password complexity (uppercase, lowercase, digit, special character). Defaults to true. |
 | `AD__AllowInvalidCertificate` | If `true`, the LDAP server certificate is not validated. Use only for testing. |
 
 #### Example: Windows Active Directory with LDAPS
