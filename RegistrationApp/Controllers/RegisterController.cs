@@ -37,6 +37,7 @@ public class RegisterController : Controller
         if (link.ValidUntil < DateTime.UtcNow) return Content("Link expired");
         if (link.IsSingleUse && link.IsUsed) return Content("Link already used");
 
+        await SetPolicyViewBag();
         return View(link);
     }
 
@@ -98,6 +99,8 @@ public class RegisterController : Controller
         if (link.IsUsed) return Content("Link already used");
         if (link.ValidUntil < DateTime.UtcNow) return Content("Link expired");
 
+        await SetPolicyViewBag();
+        ViewBag.DisplayName = await SafeGetUserName(link.UserDn);
         return View(link);
     }
 
@@ -109,16 +112,18 @@ public class RegisterController : Controller
         if (link.IsUsed) return Content("Link already used");
         if (link.ValidUntil < DateTime.UtcNow) return Content("Link expired");
 
+        // Make the policy and display name available so the form (incl. its live checks) re-renders correctly on error.
+        await SetPolicyViewBag();
+        var displayName = await SafeGetUserName(link.UserDn);
+        ViewBag.DisplayName = displayName;
+
         if (password != confirm)
         {
             ViewBag.Error = "Passwörter stimmen nicht überein";
             return View("ResetPassword", link);
         }
 
-        var user = await _adService.GetUserByDn(link.UserDn);
-        var firstname = user?.Name ?? string.Empty;
-
-        var pwdCheck = await ValidatePasswordAsync(password, link.Username, firstname, string.Empty);
+        var pwdCheck = await ValidatePasswordAsync(password, link.Username, displayName, string.Empty);
         if (!pwdCheck.IsValid)
         {
             ViewBag.Error = pwdCheck.Message;
@@ -217,17 +222,51 @@ public class RegisterController : Controller
     [HttpGet("GetPasswordPolicy")]
     public async Task<IActionResult> GetPasswordPolicyEndpoint()
     {
+        var (minLength, requireComplexity) = await GetEffectivePolicyAsync();
+        return Json(new { minLength, requireComplexity });
+    }
+
+    // Resolves the password policy that is actually enforced: the live directory policy if
+    // it could be read, otherwise the configured fallbacks. Never throws.
+    private async Task<(int MinLength, bool RequireComplexity)> GetEffectivePolicyAsync()
+    {
         try
         {
             var policy = await _adService.GetPasswordPolicy();
             var minLength = policy.IsConfigured ? policy.MinLength : (_adSettings.FallbackMinPasswordLength ?? 8);
             var requireComplexity = policy.IsConfigured ? policy.RequireComplexity : (_adSettings.FallbackRequirePasswordComplexity ?? true);
-            return Json(new { minLength, requireComplexity });
+            return (minLength, requireComplexity);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not fetch password policy for client validation, returning defaults");
-            return Json(new { minLength = _adSettings.FallbackMinPasswordLength ?? 8, requireComplexity = _adSettings.FallbackRequirePasswordComplexity ?? true });
+            _logger.LogWarning(ex, "Could not fetch password policy, using configured fallback defaults");
+            return (_adSettings.FallbackMinPasswordLength ?? 8, _adSettings.FallbackRequirePasswordComplexity ?? true);
+        }
+    }
+
+    // Exposes the effective policy to the view so the hint list can be rendered server-side,
+    // matching the configured policy without a hardcoded default or a flash before JS runs.
+    private async Task SetPolicyViewBag()
+    {
+        var (minLength, requireComplexity) = await GetEffectivePolicyAsync();
+        ViewBag.MinLength = minLength;
+        ViewBag.RequireComplexity = requireComplexity;
+    }
+
+    // Best-effort lookup of the directory display name. Used both for the password check and
+    // to feed the client-side validation, so the "must not contain your name" rule fires on
+    // input rather than only after submit. Never throws.
+    private async Task<string> SafeGetUserName(string userDn)
+    {
+        try
+        {
+            var user = await _adService.GetUserByDn(userDn);
+            return user?.Name ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load user name for {Dn}", userDn);
+            return string.Empty;
         }
     }
 
@@ -275,9 +314,7 @@ public class RegisterController : Controller
         if (!string.IsNullOrEmpty(lastname) && pwd.Contains(lastname, StringComparison.OrdinalIgnoreCase))
             return (false, "Password must not contain your last name");
 
-        var policy = await _adService.GetPasswordPolicy();
-        var minLength = policy.IsConfigured ? policy.MinLength : (_adSettings.FallbackMinPasswordLength ?? 8);
-        var requireComplexity = policy.IsConfigured ? policy.RequireComplexity : (_adSettings.FallbackRequirePasswordComplexity ?? true);
+        var (minLength, requireComplexity) = await GetEffectivePolicyAsync();
 
         if (pwd.Length < minLength)
             return (false, $"Password must be at least {minLength} characters long");

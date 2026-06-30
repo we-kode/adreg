@@ -4,6 +4,10 @@
 @{
     // Use the shared layout so site.css and scripts are applied
     Layout = "_Layout";
+
+    // Effective password policy, resolved server-side (live directory policy or configured fallback).
+    int minLength = ViewBag.MinLength ?? 8;
+    bool requireComplexity = ViewBag.RequireComplexity ?? true;
 }
 
 <h2 class="mt-3">Registrieren</h2>
@@ -34,6 +38,17 @@
                 <input id="confirm" type="password" name="confirm" class="form-control" />
             </div>
 
+            <ul id="policyHints" class="text-muted small mb-3">
+                <li>Mindestens @minLength Zeichen</li>
+                @if (requireComplexity)
+                {
+                    <li>Großbuchstaben und Kleinbuchstaben</li>
+                    <li>Mindestens eine Zahl</li>
+                    <li>Mindestens ein Sonderzeichen</li>
+                }
+                <li>Darf nicht den Vor-, Nachnamen oder Benutzernamen enthalten</li>
+            </ul>
+
             <div id="validation" class="text-danger mb-3"></div>
 
             <button id="submitBtn" class="btn btn-primary" disabled>Absenden</button>
@@ -54,20 +69,14 @@
         const form = document.getElementById('regForm');
 
         let timer = 0;
-        let policy = { minLength: 8, requireComplexity: true };
+        // Policy injected server-side so client validation matches the rendered hints exactly.
+        const policy = { minLength: @minLength, requireComplexity: @(requireComplexity ? "true" : "false") };
 
         function debounce(fn, ms) {
             return function () {
                 clearTimeout(timer);
                 timer = setTimeout(() => fn.apply(this, arguments), ms);
             }
-        }
-
-        async function loadPolicy() {
-            try {
-                const resp = await fetch('/Register/GetPasswordPolicy');
-                if (resp.ok) policy = await resp.json();
-            } catch (e) { console.warn('Could not load password policy, using defaults', e); }
         }
 
         async function updateUsername() {
@@ -127,7 +136,7 @@
             setTimeout(() => form.submit(), 1300);
         });
 
-        // load policy then run initial validation
-        loadPolicy().then(validateForm);
+        // run initial validation against the injected policy
+        validateForm();
     </script>
 }
