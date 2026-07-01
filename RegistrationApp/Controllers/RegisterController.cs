@@ -51,6 +51,9 @@ public class RegisterController : Controller
         if (string.IsNullOrWhiteSpace(firstname) || string.IsNullOrWhiteSpace(lastname))
             return BadRequest("Firstname and lastname are required");
 
+        firstname = firstname.Trim();
+        lastname = lastname.Trim();
+
         if (password != confirm)
             return BadRequest("Passwords do not match");
 
@@ -214,7 +217,7 @@ public class RegisterController : Controller
         if (string.IsNullOrWhiteSpace(firstname) || string.IsNullOrWhiteSpace(lastname))
             return Json(new { username = string.Empty });
 
-        var baseUsername = MakeUsername(firstname, lastname);
+        var baseUsername = MakeUsername(firstname.Trim(), lastname.Trim());
         var suggestion = GenerateAvailableUsername(baseUsername);
         return Json(new { username = suggestion });
     }

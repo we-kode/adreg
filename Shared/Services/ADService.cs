@@ -623,8 +623,22 @@ public class ADService
     private static byte[] EncodeAdPassword(string pwd) =>
         Encoding.Unicode.GetBytes($"\"{pwd}\"");
 
-    private static string EscapeRdn(string input) =>
-        input.Replace("\\", "\\\\").Replace(",", "\\,").Replace("=", "\\=");
+    // Escapes an RDN value per RFC 4514: the special chars below, plus a leading '#',
+    // plus a leading or trailing space (both invalid unescaped, e.g. "Apelt " -> BAD_ATT_SYNTAX).
+    private static string EscapeRdn(string input)
+    {
+        var sb = new StringBuilder();
+        for (var i = 0; i < input.Length; i++)
+        {
+            var c = input[i];
+            var isEdgeSpace = c == ' ' && (i == 0 || i == input.Length - 1);
+            var isLeadingHash = c == '#' && i == 0;
+            if (isEdgeSpace || isLeadingHash || c is '\\' or ',' or '+' or '"' or '<' or '>' or ';' or '=')
+                sb.Append('\\');
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
 
     private static string EscapeFilter(string input) =>
         input.Replace("\\", "\\5c").Replace("*", "\\2a").Replace("(", "\\28").Replace(")", "\\29").Replace("\0", "\\00");
