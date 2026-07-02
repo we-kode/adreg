@@ -111,6 +111,50 @@ public class AdminController(
         return View();
     }
 
+    [HttpGet]
+    public async Task<IActionResult> Invitations()
+    {
+        var list = await db.Links
+            .AsNoTracking()
+            .Select(l => new RegistrationLinkDto
+            {
+                Id = l.Id,
+                Email = l.Email,
+                ValidUntil = l.ValidUntil,
+                IsSingleUse = l.IsSingleUse,
+                IsUsed = l.IsUsed,
+                GroupsJson = l.GroupsJson
+            })
+            .ToListAsync();
+
+        // Show still-usable invitations first, then expired/used ones.
+        var ordered = list
+            .OrderByDescending(l => l.IsActive)
+            .ThenBy(l => l.ValidUntil ?? DateTime.MaxValue)
+            .ToList();
+
+        return View(ordered);
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> RevokeLink(Guid id)
+    {
+        var link = await db.Links.FindAsync(id);
+        if (link != null)
+        {
+            db.Links.Remove(link);
+            await db.SaveChangesAsync();
+            TempData["Success"] = $"Einladung an {link.Email} zurückgezogen";
+        }
+        else
+        {
+            TempData["Error"] = "Einladung nicht gefunden (evtl. bereits entfernt).";
+        }
+
+        return RedirectToAction("Invitations");
+    }
+
     [HttpGet] public IActionResult CreateGroup() => View();
 
     [HttpGet] public IActionResult Manage() => View();

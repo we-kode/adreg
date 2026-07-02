@@ -1,0 +1,119 @@
+@using AdminApp.Models
+@model List<RegistrationLinkDto>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2 class="mb-0">Verschickte Einladungen</h2>
+    <a asp-controller="Admin" asp-action="CreateLink" class="btn btn-primary">➕ Neue Einladung</a>
+</div>
+
+<div class="mb-3 d-flex flex-wrap gap-2">
+    <a asp-controller="Admin" asp-action="Index" class="btn btn-outline-secondary">← Zurück zur Übersicht</a>
+</div>
+
+@if (!Model.Any())
+{
+    <div class="alert alert-info">
+        Es wurden noch keine Einladungen verschickt (oder alle wurden bereits bereinigt).
+    </div>
+}
+else
+{
+    <table class="table table-hover table-striped shadow-sm align-middle">
+
+        <thead class="table-dark">
+            <tr>
+                <th>Email</th>
+                <th>Gruppen</th>
+                <th>Einmal-Link</th>
+                <th>Ablaufdatum (lokale Zeit)</th>
+                <th>Status</th>
+                <th style="width:160px;">Aktionen</th>
+            </tr>
+        </thead>
+
+        <tbody>
+            @foreach (var l in Model)
+            {
+                <tr>
+                    <td>@l.Email</td>
+                    <td>
+                        @if (l.GroupNames.Count == 0)
+                        {
+                            <span class="text-muted">&mdash;</span>
+                        }
+                        else
+                        {
+                            foreach (var g in l.GroupNames)
+                            {
+                                <span class="badge bg-secondary me-1">@g</span>
+                            }
+                        }
+                    </td>
+                    <td>
+                        @if (l.IsSingleUse)
+                        {
+                            <span class="badge bg-info text-dark">Ja</span>
+                        }
+                        else
+                        {
+                            <span class="badge bg-light text-dark border">Nein</span>
+                        }
+                    </td>
+                    <td>
+                        @if (l.ValidUntil.HasValue)
+                        {
+                            // Emit the value as an explicit UTC ISO-8601 timestamp; the
+                            // browser converts it to the admin's local timezone (see script).
+                            var iso = DateTime.SpecifyKind(l.ValidUntil.Value, DateTimeKind.Utc)
+                                .ToString("yyyy-MM-ddTHH:mm:ssZ");
+                            <span class="local-datetime" data-utc="@iso">@l.ValidUntil.Value.ToString("yyyy-MM-dd HH:mm") UTC</span>
+                        }
+                        else
+                        {
+                            <span class="text-muted">Kein Ablauf</span>
+                        }
+                    </td>
+                    <td>
+                        @if (l.IsConsumed)
+                        {
+                            <span class="badge bg-secondary">Verwendet</span>
+                        }
+                        else if (l.IsExpired)
+                        {
+                            <span class="badge bg-warning text-dark">Abgelaufen</span>
+                        }
+                        else
+                        {
+                            <span class="badge bg-success">Aktiv</span>
+                        }
+                    </td>
+                    <td>
+                        <form method="post" asp-action="RevokeLink" class="m-0"
+                              onsubmit="return confirm('Diese Einladung wirklich zurückziehen? Der Link wird sofort ungültig.');">
+                            <input type="hidden" name="id" value="@l.Id" />
+                            <button class="btn btn-danger btn-sm">Zurückziehen</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+
+    </table>
+}
+
+@section Scripts {
+    <script>
+        // Convert every UTC timestamp to the viewing admin's local timezone.
+        // The server has no knowledge of the browser's timezone, so the value
+        // is rendered as UTC ISO-8601 and localized here.
+        document.querySelectorAll('.local-datetime[data-utc]').forEach(function (el) {
+            var d = new Date(el.getAttribute('data-utc'));
+            if (isNaN(d.getTime())) return;
+            el.textContent = d.toLocaleString(undefined, {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit'
+            });
+            el.title = d.toString(); // full form incl. timezone name on hover
+        });
+    </script>
+}
