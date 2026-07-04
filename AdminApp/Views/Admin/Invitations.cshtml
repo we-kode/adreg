@@ -88,10 +88,9 @@ else
                         }
                     </td>
                     <td>
-                        <form method="post" asp-action="RevokeLink" class="m-0"
-                              onsubmit="return confirm('Diese Einladung wirklich zurückziehen? Der Link wird sofort ungültig.');">
+                        <form method="post" asp-action="RevokeLink" class="m-0 revoke-link-form">
                             <input type="hidden" name="id" value="@l.Id" />
-                            <button class="btn btn-danger btn-sm">Zurückziehen</button>
+                            <button type="button" class="btn btn-danger btn-sm revoke-link-btn" data-email="@l.Email">Zurückziehen</button>
                         </form>
                     </td>
                 </tr>
@@ -101,8 +100,54 @@ else
     </table>
 }
 
+<div class="modal fade" id="revokeConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Einladung zurückziehen</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="revokeConfirmMessage" class="mb-0"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" id="revokeConfirmBtn" class="btn btn-danger">Zurückziehen</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
     <script>
+        const revokeConfirmModalEl = document.getElementById('revokeConfirmModal');
+        const revokeConfirmModal = revokeConfirmModalEl ? new bootstrap.Modal(revokeConfirmModalEl) : null;
+        const revokeConfirmMessage = document.getElementById('revokeConfirmMessage');
+        const revokeConfirmBtn = document.getElementById('revokeConfirmBtn');
+
+        let revokePendingForm = null;
+
+        document.querySelectorAll('.revoke-link-btn').forEach(function (button) {
+            button.addEventListener('click', function (event) {
+                event.preventDefault();
+
+                const form = button.closest('form');
+                const email = button.getAttribute('data-email') || 'diese Einladung';
+
+                revokeConfirmMessage.textContent = `Möchtest du die Einladung für ${email} wirklich zurückziehen? Der Link wird sofort ungültig.`;
+                revokePendingForm = form;
+                revokeConfirmModal?.show();
+            });
+        });
+
+        if (revokeConfirmBtn) {
+            revokeConfirmBtn.addEventListener('click', function () {
+                if (revokePendingForm) {
+                    revokePendingForm.submit();
+                }
+            });
+        }
+
         // Convert every UTC timestamp to the viewing admin's local timezone.
         // The server has no knowledge of the browser's timezone, so the value
         // is rendered as UTC ISO-8601 and localized here.

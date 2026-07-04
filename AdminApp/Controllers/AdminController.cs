@@ -116,6 +116,7 @@ public class AdminController(
     {
         var list = await db.Links
             .AsNoTracking()
+            .Where(l => !l.IsSingleUse || l.IsSingleUse && !l.IsUsed)
             .Select(l => new RegistrationLinkDto
             {
                 Id = l.Id,
@@ -561,15 +562,19 @@ public class AdminController(
     }
 
     [HttpPost]
-    public async Task<IActionResult> CreateLink(DateTime? validUntil, bool singleUse, string email, List<string>? selectedGroups)
+    public async Task<IActionResult> CreateLink(DateTime? validUntil, string? singleUse, string email, List<string>? selectedGroups)
     {
         try
         {
+            var formValues = Request.Form["singleUse"].ToArray();
+            var isSingleUse = formValues.Any(v =>
+                bool.TryParse(v, out var parsed) ? parsed : v is "1" or "true" or "on");
+
             var link = new RegistrationLink
             {
                 Id = Guid.NewGuid(),
                 ValidUntil = validUntil,
-                IsSingleUse = singleUse,
+                IsSingleUse = isSingleUse,
                 IsUsed = false,
                 GroupsJson = JsonSerializer.Serialize(selectedGroups ?? []),
                 Email = email.Trim()
